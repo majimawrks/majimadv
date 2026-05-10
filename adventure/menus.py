@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import discord
 from redbot.core.commands import commands
 from redbot.core.i18n import Translator
-from redbot.core.utils.chat_formatting import box, escape, humanize_number
+from redbot.core.utils.chat_formatting import bold, box, escape, humanize_number
 from redbot.vendored.discord.ext import menus
 
 from .bank import bank
@@ -989,3 +990,359 @@ class BackpackMenu(BaseMenu):
         """Sends help for the provided command."""
         await interaction.response.defer()
         await self.ctx.send_help(self.__help_command)
+
+
+class PetSelectMenu(discord.ui.View):
+    """Three-tiered interactive pet picker for [p]adventureset setpet.
+
+    Tier 1 — Type (adjective), e.g. "angry", "water".
+              ✨ Special groups rare / unique pets that don't follow the pattern.
+              ⭐ marks the top-3 most-populated types.
+    Tier 2 — Species, e.g. "wolf", "dragon".
+              ⭐ marks the top-3 most-common species across all types.
+    Tier 3 — Confirm the selected pet (shows stats before saving).
+    """
+
+    _PER_PAGE: int = 25
+    _TOP_N: int = 3
+    _STAR: str = "⭐"
+    _SPECIAL_EMOJI: str = "✨"
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        target_user: Union[discord.Member, discord.User],
+        pet_list: Dict[str, Any],
+        timeout: int = 120,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.ctx = ctx
+        self.target_user = target_user
+        self.pet_list = pet_list
+        self.result: Optional[str] = None
+        self.message: Optional[discord.Message] = None
+
+        # ── precompute ──────────────────────────────────────────────────────
+        adj_counter: Counter = Counter()
+        for name in pet_list:
+            parts = name.split(" ", 1)
+            if len(parts) == 2:
+                adj_counter[parts[0]] += 1
+
+        def _is_special(name: str) -> bool:
+            """Pets with no adjective OR whose adjective is completely unique."""
+            if " " not in name:
+                return True
+            return adj_counter[name.split(" ", 1)[0]] == 1
+
+        self._special: List[str] = sorted(n for n in pet_list if _is_special(n))
+
+        # adj → sorted list of species (regular pets only)
+        self._species_by_adj: Dict[str, List[str]] = {}
+        for name in pet_list:
+            if _is_special(name):
+                continue
+            adj, sp = name.split(" ", 1)
+            self._species_by_adj.setdefault(adj, []).append(sp)
+        for sp_list in self._species_by_adj.values():
+            sp_list.sort()
+        self._adjs: List[str] = sorted(self._species_by_adj)
+
+        # top-N popularity
+        adj_pop = Counter({adj: len(sps) for adj, sps in self._species_by_adj.items()})
+        sp_pop: Counter = Counter()
+        for sps in self._species_by_adj.values():
+            sp_pop.update(sps)
+        self._top_adjs: frozenset = frozenset(a for a, _ in adj_pop.most_common(self._TOP_N))
+        self._top_species: frozenset = frozenset(s for s, _ in sp_pop.most_common(self._TOP_N))
+
+        # ── state ───────────────────────────────────────────────────────────
+        self._tier: int = 1
+        self._selected_adj: Optional[str] = None  # "__special__" or an adjective
+        self._page: int = 0
+
+        self._rebuild()
+
+    # ── guard ────────────────────────────────────────────────────────────────
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                _("This menu is not for you."), ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.result = None
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+    # ── rebuild ───────────────────────────────────────────────────────────────
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        if self._tier == 1:
+            self._build_tier1()
+        elif self._tier == 2:
+            self._build_tier2()
+        else:
+            self._build_tier3()
+
+    # ── tier 1: type / adjective ─────────────────────────────────────────────
+
+    def _build_tier1(self) -> None:
+        has_special = bool(self._special)
+        # Total selectable items = 1 (Special bucket) + len(adjs)
+        total = len(self._adjs) + (1 if has_special else 0)
+
+        options: List[discord.SelectOption] = []
+
+        if self._page == 0 and has_special:
+            options.append(discord.SelectOption(
+                label=_("Special"),
+                value="__special__",
+                description=_("{n} rare / unique pets").format(n=len(self._special)),
+                emoji=self._SPECIAL_EMOJI,
+            ))
+            # Page 0 gives the first PER_PAGE-1 regular adjs the remaining slots
+            adjs_slice = self._adjs[: self._PER_PAGE - 1]
+        else:
+            # Page 0 without special: first PER_PAGE adjs
+            # Page n>0 with special:  offset = (PER_PAGE-1) + (n-1)*PER_PAGE
+            if has_special and self._page > 0:
+                offset = (self._PER_PAGE - 1) + (self._page - 1) * self._PER_PAGE
+            else:
+                offset = self._page * self._PER_PAGE
+            adjs_slice = self._adjs[offset: offset + self._PER_PAGE]
+
+        for adj in adjs_slice:
+            count = len(self._species_by_adj.get(adj, []))
+            emoji = self._STAR if adj in self._top_adjs else None
+            options.append(discord.SelectOption(
+                label=adj.capitalize(),
+                value=adj,
+                description=_("{n} pets").format(n=count),
+                emoji=emoji,
+            ))
+
+        sel = discord.ui.Select(
+            placeholder=_("Select a type…"),
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+        async def _on_type(interaction: discord.Interaction) -> None:
+            self._selected_adj = sel.values[0]
+            self._tier = 2
+            self._page = 0
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+        sel.callback = _on_type
+        self.add_item(sel)
+        self._add_nav(total, row=1)
+        self._add_cancel(row=2)
+
+    # ── tier 2: species ───────────────────────────────────────────────────────
+
+    def _build_tier2(self) -> None:
+        if self._selected_adj == "__special__":
+            items = self._special
+            placeholder = _("Select a pet…")
+        else:
+            items = self._species_by_adj.get(self._selected_adj, [])
+            placeholder = _("Select a species…")
+
+        page_items = items[self._page * self._PER_PAGE: (self._page + 1) * self._PER_PAGE]
+
+        options: List[discord.SelectOption] = []
+        for item in page_items:
+            if self._selected_adj == "__special__":
+                pet_data = self.pet_list.get(item, {})
+                label = item
+                emoji: Optional[str] = self._SPECIAL_EMOJI
+            else:
+                full = f"{self._selected_adj} {item}"
+                pet_data = self.pet_list.get(full, {})
+                label = item.capitalize()
+                emoji = self._STAR if item in self._top_species else None
+
+            bonus = pet_data.get("bonus", "?")
+            cha = pet_data.get("cha", "?")
+            options.append(discord.SelectOption(
+                label=label,
+                value=item,
+                description=_("Bonus {bonus}x · CHA {cha}").format(bonus=bonus, cha=cha),
+                emoji=emoji,
+            ))
+
+        sel = discord.ui.Select(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+        async def _on_species(interaction: discord.Interaction) -> None:
+            chosen = sel.values[0]
+            self.result = (
+                chosen
+                if self._selected_adj == "__special__"
+                else f"{self._selected_adj} {chosen}"
+            )
+            self._tier = 3
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._make_pet_embed(), view=self)
+
+        sel.callback = _on_species
+        self.add_item(sel)
+        self._add_nav(len(items), row=1)
+        self._add_back(row=2)
+        self._add_cancel(row=2)
+
+    # ── tier 3: confirm ───────────────────────────────────────────────────────
+
+    def _build_tier3(self) -> None:
+        confirm = discord.ui.Button(
+            label=_("Confirm"), style=discord.ButtonStyle.green, emoji="\N{WHITE HEAVY CHECK MARK}", row=0
+        )
+        confirm.callback = self._do_confirm
+        self.add_item(confirm)
+        self._add_back(row=0)
+        self._add_cancel(row=0)
+
+    # ── shared button callbacks ───────────────────────────────────────────────
+
+    async def _do_cancel(self, interaction: discord.Interaction) -> None:
+        self.result = None
+        self.stop()
+        await interaction.response.edit_message(
+            embed=discord.Embed(title=_("Cancelled"), colour=discord.Colour.red()),
+            view=None,
+        )
+
+    async def _do_confirm(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title=_("Pet Selected"),
+                description=_(
+                    "**{pet}** will be set as {user}'s pet."
+                ).format(pet=self.result, user=bold(str(self.target_user))),
+                colour=discord.Colour.green(),
+            ),
+            view=None,
+        )
+
+    async def _do_back(self, interaction: discord.Interaction) -> None:
+        if self._tier == 3:
+            self._tier = 2
+            self.result = None
+        elif self._tier == 2:
+            self._tier = 1
+            self._selected_adj = None
+        self._page = 0
+        self._rebuild()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    async def _do_prev(self, interaction: discord.Interaction) -> None:
+        self._page -= 1
+        self._rebuild()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    async def _do_next(self, interaction: discord.Interaction) -> None:
+        self._page += 1
+        self._rebuild()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    def _add_nav(self, total: int, row: int = 1) -> None:
+        if self._page > 0:
+            prev = discord.ui.Button(
+                label=_("\N{BLACK LEFT-POINTING TRIANGLE} Prev"),
+                style=discord.ButtonStyle.grey,
+                row=row,
+            )
+            prev.callback = self._do_prev
+            self.add_item(prev)
+        if (self._page + 1) * self._PER_PAGE < total:
+            nxt = discord.ui.Button(
+                label=_("Next \N{BLACK RIGHT-POINTING TRIANGLE}"),
+                style=discord.ButtonStyle.grey,
+                row=row,
+            )
+            nxt.callback = self._do_next
+            self.add_item(nxt)
+
+    def _add_back(self, row: int = 2) -> None:
+        btn = discord.ui.Button(
+            label=_("Back"), style=discord.ButtonStyle.grey,
+            emoji="\N{LEFTWARDS ARROW WITH HOOK}\N{VARIATION SELECTOR-16}", row=row,
+        )
+        btn.callback = self._do_back
+        self.add_item(btn)
+
+    def _add_cancel(self, row: int = 2) -> None:
+        btn = discord.ui.Button(
+            label=_("Cancel"), style=discord.ButtonStyle.red,
+            emoji="\N{CROSS MARK}", row=row,
+        )
+        btn.callback = self._do_cancel
+        self.add_item(btn)
+
+    # ── embeds ────────────────────────────────────────────────────────────────
+
+    def _make_embed(self) -> discord.Embed:
+        user_str = bold(str(self.target_user))
+        if self._tier == 1:
+            desc = _(
+                "Setting pet for {user}\n\n"
+                "**Step 1 of 3 \N{EM DASH} Select a Type**\n"
+                "{star} = top {n} most-populated types\n"
+                "{special} = rare / unique pets"
+            ).format(user=user_str, star=self._STAR, n=self._TOP_N, special=self._SPECIAL_EMOJI)
+            colour = discord.Colour.blurple()
+        elif self._tier == 2:
+            if self._selected_adj == "__special__":
+                type_label = f"{self._SPECIAL_EMOJI} Special"
+                step = _("Select a Pet")
+            else:
+                star_pfx = f"{self._STAR} " if self._selected_adj in self._top_adjs else ""
+                type_label = f"{star_pfx}{self._selected_adj.capitalize()}"
+                step = _("Select a Species")
+            desc = _(
+                "Setting pet for {user}\n\n"
+                "**Type:** {type}\n"
+                "**Step 2 of 3 \N{EM DASH} {step}**\n"
+                "{star} = top {n} most common species"
+            ).format(user=user_str, type=type_label, step=step, star=self._STAR, n=self._TOP_N)
+            colour = discord.Colour.blue()
+        else:
+            desc = _(
+                "Setting pet for {user}\n\n**Step 3 of 3 \N{EM DASH} Confirm your selection**"
+            ).format(user=user_str)
+            colour = discord.Colour.green()
+        return discord.Embed(title=_("Set Pet"), description=desc, colour=colour)
+
+    def _make_pet_embed(self) -> discord.Embed:
+        data = self.pet_list.get(self.result, {})
+        bonuses = data.get("bonuses", {})
+        embed = discord.Embed(
+            title=_("Set Pet \N{EM DASH} Confirm"),
+            description=_(
+                "Setting pet for {user}\n\n**Step 3 of 3 \N{EM DASH} Confirm your selection**"
+            ).format(user=bold(str(self.target_user))),
+            colour=discord.Colour.green(),
+        )
+        embed.add_field(name=_("Pet"), value=self.result, inline=False)
+        embed.add_field(name=_("Bonus"), value=f"{data.get('bonus', '?')}×")
+        embed.add_field(name=_("CHA Required"), value=humanize_number(int(data.get("cha", 0))))
+        embed.add_field(name=_("Always Active"), value=_("Yes") if bonuses.get("always") else _("No"))
+        embed.add_field(name=_("Crit Chance"), value=f"{bonuses.get('crit', 0)}%")
+        return embed

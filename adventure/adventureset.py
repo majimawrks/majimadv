@@ -15,9 +15,10 @@ from redbot.core.utils.chat_formatting import bold, box, humanize_list, humanize
 from .abc import AdventureMixin
 from .bank import bank
 from .charsheet import Character
-from .constants import Slot
+from .constants import HeroClasses, Slot
 from .converters import DayConverter, PercentageConverter, parse_timedelta
 from .helpers import has_separated_economy, smart_embed
+from .menus import PetSelectMenu
 
 _ = Translator("Adventure", __file__)
 
@@ -395,6 +396,49 @@ class AdventureSetCommands(AdventureMixin):
                 del c.backpack[item.name]
             await self.config.user(user).set(await c.to_json(self.config))
         await ctx.send(_("{item} removed from {user}.").format(item=box(str(item), lang="ansi"), user=bold(user)))
+
+    @adventureset.command(name="setpet")
+    @commands.is_owner()
+    async def set_user_pet(self, ctx: commands.Context, user: Union[discord.Member, discord.User]):
+        """[Owner] Set a Ranger's pet via an interactive menu."""
+        # Quick class check before opening the menu
+        async with self.get_lock(user):
+            try:
+                c = await Character.from_json(ctx, self.config, user, self._daily_bonus)
+            except Exception as exc:
+                log.exception("Error with the new character sheet", exc_info=exc)
+                return
+            if c.hc is not HeroClasses.ranger:
+                return await smart_embed(
+                    ctx, _("{} is not a Ranger and cannot have a pet.").format(bold(str(user)))
+                )
+
+        # Build full pet list (default + theme extras)
+        theme = await self.config.theme()
+        extra_pets = (await self.config.themes.all()).get(theme, {}).get("pets", {})
+        pet_list = {**self.PETS, **extra_pets}
+
+        view = PetSelectMenu(ctx, user, pet_list)
+        message = await ctx.send(embed=view._make_embed(), view=view)
+        view.message = message
+        await view.wait()
+
+        if not view.result:
+            return  # cancelled or timed out — menu already edited itself
+
+        # Apply the chosen pet
+        async with self.get_lock(user):
+            try:
+                c = await Character.from_json(ctx, self.config, user, self._daily_bonus)
+            except Exception as exc:
+                log.exception("Error with the new character sheet", exc_info=exc)
+                return
+            if c.hc is not HeroClasses.ranger:
+                return await smart_embed(
+                    ctx, _("{} is not a Ranger and cannot have a pet.").format(bold(str(user)))
+                )
+            c.heroclass["pet"] = pet_list[view.result]
+            await self.config.user(user).set(await c.to_json(ctx, self.config))
 
     @adventureset.command()
     @commands.is_owner()
