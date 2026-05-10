@@ -412,13 +412,15 @@ class AdventureSetCommands(AdventureMixin):
                 return await smart_embed(
                     ctx, _("{} is not a Ranger and cannot have a pet.").format(bold(str(user)))
                 )
+            char_eff_cha = c.total_cha + (c.total_int // 3) + (c.luck // 2)
+            char_sets = frozenset(c.sets)
 
         # Build full pet list (default + theme extras)
         theme = await self.config.theme()
         extra_pets = (await self.config.themes.all()).get(theme, {}).get("pets", {})
         pet_list = {**self.PETS, **extra_pets}
 
-        view = PetSelectMenu(ctx, user, pet_list)
+        view = PetSelectMenu(ctx, user, pet_list, char_eff_cha=char_eff_cha, char_sets=char_sets)
         message = await ctx.send(embed=view._make_embed(), view=view)
         view.message = message
         await view.wait()

@@ -1013,6 +1013,8 @@ class PetSelectMenu(discord.ui.View):
         ctx: commands.Context,
         target_user: Union[discord.Member, discord.User],
         pet_list: Dict[str, Any],
+        char_eff_cha: int = 0,
+        char_sets: frozenset = frozenset(),
         timeout: int = 120,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -1021,6 +1023,8 @@ class PetSelectMenu(discord.ui.View):
         self.pet_list = pet_list
         self.result: Optional[str] = None
         self.message: Optional[discord.Message] = None
+        self._char_eff_cha: int = char_eff_cha
+        self._char_sets: frozenset = char_sets
 
         # ── precompute ──────────────────────────────────────────────────────
         adj_counter: Counter = Counter()
@@ -1080,6 +1084,46 @@ class PetSelectMenu(discord.ui.View):
                 await self.message.edit(view=None)
             except discord.HTTPException:
                 pass
+
+    # ── requirement helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _fmt_num(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.0f}K"
+        return str(n)
+
+    def _will_save(self, data: dict) -> bool:
+        """Return True if the character meets all requirements for this pet."""
+        cha_req = int(data.get("cha", 0))
+        req_set = data.get("bonuses", {}).get("req", {}).get("set")
+        cha_ok = self._char_eff_cha >= cha_req
+        set_ok = (not req_set) or (req_set in self._char_sets)
+        return cha_ok and set_ok
+
+    def _option_desc(self, data: dict) -> str:
+        """One-line SelectOption description: shows ✅/❌ and what's missing."""
+        cha_req = int(data.get("cha", 0))
+        bonuses = data.get("bonuses", {})
+        req_set = bonuses.get("req", {}).get("set")
+        bonus = data.get("bonus", "?")
+        cha_ok = self._char_eff_cha >= cha_req
+        set_ok = (not req_set) or (req_set in self._char_sets)
+
+        if cha_ok and set_ok:
+            cha_str = f" · CHA {self._fmt_num(cha_req)}" if cha_req else ""
+            return f"✅ Bonus {bonus}×{cha_str}"
+
+        problems: List[str] = []
+        if not cha_ok:
+            problems.append(
+                f"CHA {self._fmt_num(cha_req)} (have {self._fmt_num(self._char_eff_cha)})"
+            )
+        if not set_ok:
+            problems.append(f"Set: {req_set}")
+        return f"❌ {' · '.join(problems)}"
 
     # ── rebuild ───────────────────────────────────────────────────────────────
 
@@ -1173,12 +1217,10 @@ class PetSelectMenu(discord.ui.View):
                 label = item.capitalize()
                 emoji = self._STAR if item in self._top_species else None
 
-            bonus = pet_data.get("bonus", "?")
-            cha = pet_data.get("cha", "?")
             options.append(discord.SelectOption(
                 label=label,
                 value=item,
-                description=_("Bonus {bonus}x · CHA {cha}").format(bonus=bonus, cha=cha),
+                description=self._option_desc(pet_data),
                 emoji=emoji,
             ))
 
@@ -1334,16 +1376,19 @@ class PetSelectMenu(discord.ui.View):
         data = self.pet_list.get(self.result, {})
         bonuses = data.get("bonuses", {})
         req_set = bonuses.get("req", {}).get("set")
+        will_save = self._will_save(data)
+        colour = discord.Colour.green() if will_save else discord.Colour.red()
         embed = discord.Embed(
             title=_("Set Pet \N{EM DASH} Confirm"),
             description=_(
                 "Setting pet for {user}\n\n**Step 3 of 3 \N{EM DASH} Confirm your selection**"
             ).format(user=bold(str(self.target_user))),
-            colour=discord.Colour.green(),
+            colour=colour,
         )
         embed.add_field(name=_("Pet"), value=self.result, inline=False)
         embed.add_field(name=_("Bonus"), value=f"{data.get('bonus', '?')}×")
         embed.add_field(name=_("CHA Required"), value=humanize_number(int(data.get("cha", 0))))
+        embed.add_field(name=_("Effective CHA"), value=humanize_number(self._char_eff_cha))
         embed.add_field(name=_("Always Active"), value=_("Yes") if bonuses.get("always") else _("No"))
         embed.add_field(name=_("Crit Chance"), value=f"{bonuses.get('crit', 0)}%")
         if req_set:
@@ -1352,4 +1397,10 @@ class PetSelectMenu(discord.ui.View):
                 value=req_set,
                 inline=False,
             )
+        status_line = (
+            _("✅ **Pet will stick** — requirements met.")
+            if will_save
+            else _("❌ **Pet will be cleared on load** — requirements not met.")
+        )
+        embed.add_field(name=_("Status"), value=status_line, inline=False)
         return embed
