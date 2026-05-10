@@ -12,7 +12,7 @@ from redbot.vendored.discord.ext import menus
 
 from .bank import bank
 from .charsheet import Character
-from .constants import Rarities, Slot
+from .constants import Slot
 from .helpers import is_dev, smart_embed
 
 if TYPE_CHECKING:
@@ -1409,23 +1409,15 @@ class PetSelectMenu(discord.ui.View):
 
 # ── EquipSetMenu ─────────────────────────────────────────────────────────────
 
-_HIGH_RARITIES: List[Rarities] = [
-    Rarities.legendary,
-    Rarities.ascended,
-    Rarities.set,
-    Rarities.forged,
-    Rarities.event,
-]
 _EQUIP_SLOTS: List[Slot] = [s for s in Slot if s is not Slot.two_handed]
-_DUAL_WIELD_SLOTS: frozenset = frozenset({Slot.left, Slot.right})
 
 
 class EquipSetMenu(discord.ui.View):
-    """Three-tiered admin menu for force-equipping items on a user.
+    """Three-tiered admin menu for force-equipping TR_GEAR_SET items on a user.
 
     Tier 1 — Slot selection (all slots shown with current item + queued item).
-    Tier 2 — Rarity selection (legendary+ only, filtered to what's in backpack).
-    Tier 3 — Item selection (paginated, sorted best-first).
+    Tier 2 — Set name selection (sets that have items for this slot).
+    Tier 3 — Item selection (all matching items, paginated).
 
     Selections are queued locally; all changes are applied atomically on Done.
     """
@@ -1437,6 +1429,7 @@ class EquipSetMenu(discord.ui.View):
         ctx: commands.Context,
         target_user: Union[discord.Member, discord.User],
         character: Character,
+        tr_gear_set: Dict[str, Any],
         timeout: int = 300,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -1445,22 +1438,22 @@ class EquipSetMenu(discord.ui.View):
         self.message: Optional[discord.Message] = None
         self.confirmed: bool = False
 
-        # Snapshot backpack & current equipment at open time
-        self._backpack: Dict[str, Any] = dict(character.backpack)
+        self._tr_gear_set: Dict[str, Any] = tr_gear_set
+
+        # Snapshot current equipment at open time
         self._equipped: Dict[Slot, Optional[Any]] = {
             slot: slot.get_item_slot(character) for slot in _EQUIP_SLOTS
         }
 
-        # slot → item queued by the admin this session
-        self._queued: Dict[Slot, Any] = {}
+        # slot → item name queued this session
+        self._queued: Dict[Slot, str] = {}
 
         # State
         self._tier: int = 1
         self._selected_slot: Optional[Slot] = None
-        self._selected_rarity: Optional[Rarities] = None
+        self._selected_set: Optional[str] = None
         self._page: int = 0
 
-        self._rarity_emojis: Dict[Rarities, str] = Rarities.emojis()
         self._rebuild()
 
     # ── guard ────────────────────────────────────────────────────────────────
@@ -1483,28 +1476,31 @@ class EquipSetMenu(discord.ui.View):
 
     # ── item helpers ─────────────────────────────────────────────────────────
 
-    def _compatible_items(self, slot: Slot) -> List[Any]:
-        """Backpack items usable in *slot*, legendary+ only, sorted best-first."""
-        out = []
-        for item in self._backpack.values():
-            if item.rarity.value < Rarities.legendary.value:
-                continue
-            if item.rarity is Rarities.pet:
-                continue
-            if slot in _DUAL_WIELD_SLOTS:
-                if item.slot not in (slot, Slot.two_handed):
-                    continue
-            elif item.slot is not slot:
-                continue
-            out.append(item)
-        return sorted(out, key=lambda i: (i.rarity.value, i.lvl, i.total_stats), reverse=True)
+    def _item_fits_slot(self, raw: Dict[str, Any], slot: Slot) -> bool:
+        return slot.name in raw.get("slot", [])
 
-    def _items_for_rarity(self, slot: Slot, rarity: Rarities) -> List[Any]:
-        return [i for i in self._compatible_items(slot) if i.rarity is rarity]
+    def _sets_for_slot(self, slot: Slot) -> List[str]:
+        sets: set = set()
+        for raw in self._tr_gear_set.values():
+            if self._item_fits_slot(raw, slot):
+                sets.add(raw["set"])
+        return sorted(sets)
 
-    def _available_rarities(self, slot: Slot) -> List[Rarities]:
-        compat = self._compatible_items(slot)
-        return [r for r in _HIGH_RARITIES if any(i.rarity is r for i in compat)]
+    def _items_for_slot_set(self, slot: Slot, set_name: str) -> List[str]:
+        return sorted(
+            name
+            for name, raw in self._tr_gear_set.items()
+            if self._item_fits_slot(raw, slot) and raw.get("set") == set_name
+        )
+
+    def _item_stat_desc(self, raw: Dict[str, Any]) -> str:
+        parts = []
+        for key, label in [("att", "ATT"), ("cha", "CHA"), ("int", "INT"), ("dex", "DEX"), ("luck", "LUCK")]:
+            v = raw.get(key, 0)
+            if v:
+                parts.append(f"{label} {v:+d}")
+        desc = " · ".join(parts)
+        return (desc if desc else "Set item")[:100]
 
     # ── rebuild ───────────────────────────────────────────────────────────────
 
@@ -1520,26 +1516,24 @@ class EquipSetMenu(discord.ui.View):
     # ── tier 1: slot selection ────────────────────────────────────────────────
 
     def _slot_desc(self, slot: Slot) -> str:
-        n = len(self._compatible_items(slot))
+        queued_name = self._queued.get(slot)
         current = self._equipped.get(slot)
-        queued = self._queued.get(slot)
-        item_str = str(queued) if queued else (str(current) if current else _("Empty"))
-        marker = " \N{LEFTWARDS ARROW WITH HOOK}" if queued else ""
-        tail = f" [{n} avail]" if n else _(" [no items]")
+        item_str = queued_name if queued_name else (str(current) if current else _("Empty"))
+        marker = " \N{LEFTWARDS ARROW WITH HOOK}" if queued_name else ""
+        n_sets = len(self._sets_for_slot(slot))
+        tail = f" [{n_sets} sets]" if n_sets else _(" [no items]")
         return f"{item_str}{marker}{tail}"[:100]
 
     def _build_tier1(self) -> None:
         options: List[discord.SelectOption] = []
         for slot in _EQUIP_SLOTS:
-            queued = self._queued.get(slot)
-            current = self._equipped.get(slot)
-            ref = queued or current
-            emoji = self._rarity_emojis.get(ref.rarity) if ref else None
+            queued_name = self._queued.get(slot)
+            has_items = bool(self._sets_for_slot(slot))
             options.append(discord.SelectOption(
                 label=str(slot),
                 value=slot.name,
                 description=self._slot_desc(slot),
-                emoji=emoji,
+                emoji="✏️" if queued_name else ("🔹" if has_items else "❌"),
             ))
 
         sel = discord.ui.Select(
@@ -1551,7 +1545,7 @@ class EquipSetMenu(discord.ui.View):
 
         async def _on_slot(interaction: discord.Interaction) -> None:
             self._selected_slot = Slot[sel.values[0]]
-            self._selected_rarity = None
+            self._selected_set = None
             self._page = 0
             self._tier = 2
             self._rebuild()
@@ -1574,49 +1568,59 @@ class EquipSetMenu(discord.ui.View):
         cancel.callback = self._do_cancel
         self.add_item(cancel)
 
-    # ── tier 2: rarity selection ──────────────────────────────────────────────
+    # ── tier 2: set selection ─────────────────────────────────────────────────
 
     def _build_tier2(self) -> None:
-        rarities = self._available_rarities(self._selected_slot)
+        sets = self._sets_for_slot(self._selected_slot)
+        page_sets = sets[self._page * self._PER_PAGE: (self._page + 1) * self._PER_PAGE]
 
-        if rarities:
+        if page_sets:
             options: List[discord.SelectOption] = []
-            for rarity in rarities:
-                n = len(self._items_for_rarity(self._selected_slot, rarity))
+            for set_name in page_sets:
+                n = len(self._items_for_slot_set(self._selected_slot, set_name))
                 options.append(discord.SelectOption(
-                    label=str(rarity),
-                    value=rarity.name,
-                    description=_("{n} item(s) available").format(n=n),
-                    emoji=self._rarity_emojis.get(rarity),
+                    label=set_name[:100],
+                    value=set_name,
+                    description=_("{n} item(s)").format(n=n),
+                    emoji="✨",
                 ))
 
             sel = discord.ui.Select(
-                placeholder=_("Select a rarity…"),
+                placeholder=_("Select a set…"),
                 min_values=1, max_values=1,
                 options=options,
                 row=0,
             )
 
-            async def _on_rarity(interaction: discord.Interaction) -> None:
-                self._selected_rarity = Rarities[sel.values[0]]
+            async def _on_set(interaction: discord.Interaction) -> None:
+                self._selected_set = sel.values[0]
                 self._page = 0
                 self._tier = 3
                 self._rebuild()
                 await interaction.response.edit_message(embed=self._make_embed(), view=self)
 
-            sel.callback = _on_rarity
+            sel.callback = _on_set
             self.add_item(sel)
+
+            if self._page > 0:
+                prev = discord.ui.Button(label=_("◄ Prev"), style=discord.ButtonStyle.grey, row=1)
+                prev.callback = self._do_prev
+                self.add_item(prev)
+            if (self._page + 1) * self._PER_PAGE < len(sets):
+                nxt = discord.ui.Button(label=_("Next ►"), style=discord.ButtonStyle.grey, row=1)
+                nxt.callback = self._do_next
+                self.add_item(nxt)
 
         back = discord.ui.Button(
             label=_("Back"), style=discord.ButtonStyle.grey,
-            emoji="\N{LEFTWARDS ARROW WITH HOOK}\N{VARIATION SELECTOR-16}", row=1,
+            emoji="\N{LEFTWARDS ARROW WITH HOOK}\N{VARIATION SELECTOR-16}", row=2,
         )
         back.callback = self._do_back
         self.add_item(back)
 
         cancel = discord.ui.Button(
             label=_("Cancel"), style=discord.ButtonStyle.red,
-            emoji="\N{CROSS MARK}", row=1,
+            emoji="\N{CROSS MARK}", row=2,
         )
         cancel.callback = self._do_cancel
         self.add_item(cancel)
@@ -1624,19 +1628,17 @@ class EquipSetMenu(discord.ui.View):
     # ── tier 3: item selection ────────────────────────────────────────────────
 
     def _build_tier3(self) -> None:
-        all_items = self._items_for_rarity(self._selected_slot, self._selected_rarity)
+        all_items = self._items_for_slot_set(self._selected_slot, self._selected_set)
         page_items = all_items[self._page * self._PER_PAGE: (self._page + 1) * self._PER_PAGE]
 
         options: List[discord.SelectOption] = []
-        for abs_idx, item in enumerate(page_items, self._page * self._PER_PAGE):
-            stat = item.stat_str()
-            if len(stat) > 100:
-                stat = stat[:97] + "…"
+        for item_name in page_items:
+            raw = self._tr_gear_set[item_name]
             options.append(discord.SelectOption(
-                label=str(item)[:100],
-                value=str(abs_idx),
-                description=stat,
-                emoji=self._rarity_emojis.get(item.rarity),
+                label=item_name[:100],
+                value=item_name,
+                description=self._item_stat_desc(raw),
+                emoji="✨",
             ))
 
         sel = discord.ui.Select(
@@ -1647,10 +1649,9 @@ class EquipSetMenu(discord.ui.View):
         )
 
         async def _on_item(interaction: discord.Interaction) -> None:
-            chosen = all_items[int(sel.values[0])]
-            self._queued[self._selected_slot] = chosen
+            self._queued[self._selected_slot] = sel.values[0]
             self._selected_slot = None
-            self._selected_rarity = None
+            self._selected_set = None
             self._tier = 1
             self._page = 0
             self._rebuild()
@@ -1693,8 +1694,8 @@ class EquipSetMenu(discord.ui.View):
         self.confirmed = True
         self.stop()
         lines = [
-            f"**{str(slot)}** → {str(item)}"
-            for slot, item in self._queued.items()
+            f"**{str(slot)}** → {item_name}"
+            for slot, item_name in self._queued.items()
         ]
         await interaction.response.edit_message(
             embed=discord.Embed(
@@ -1716,7 +1717,7 @@ class EquipSetMenu(discord.ui.View):
     async def _do_back(self, interaction: discord.Interaction) -> None:
         if self._tier == 3:
             self._tier = 2
-            self._selected_rarity = None
+            self._selected_set = None
         elif self._tier == 2:
             self._tier = 1
             self._selected_slot = None
@@ -1741,14 +1742,15 @@ class EquipSetMenu(discord.ui.View):
 
         if self._tier == 1:
             lines: List[str] = []
-            for slot, item in self._queued.items():
+            for slot, item_name in self._queued.items():
                 prev = self._equipped.get(slot)
                 prev_str = str(prev) if prev else _("Empty")
-                lines.append(f"**{str(slot)}:** {prev_str} → **{str(item)}**")
-            if lines:
-                body = _("**Queued ({n}):**\n").format(n=len(lines)) + "\n".join(lines)
-            else:
-                body = _("No changes queued yet. Select a slot below.")
+                lines.append(f"**{str(slot)}:** {prev_str} → **{item_name}**")
+            body = (
+                _("**Queued ({n}):**\n").format(n=len(lines)) + "\n".join(lines)
+                if lines
+                else _("No changes queued yet. Select a slot below.")
+            )
             return discord.Embed(
                 title=_("Set Equipment — {user}").format(user=user_str),
                 description=body,
@@ -1756,27 +1758,30 @@ class EquipSetMenu(discord.ui.View):
             )
 
         elif self._tier == 2:
-            rarities = self._available_rarities(self._selected_slot)
-            if not rarities:
-                note = _("\n\n\N{WARNING SIGN} No legendary+ items in backpack for this slot.")
-            else:
-                note = ""
+            sets = self._sets_for_slot(self._selected_slot)
+            note = (
+                _("\n\n\N{WARNING SIGN} No set items available for this slot.")
+                if not sets
+                else _("\n\n{n} sets available.").format(n=len(sets))
+            )
             return discord.Embed(
                 title=_("Set Equipment — {user}").format(user=user_str),
-                description=_(
-                    "**Slot:** {slot}{note}\n\nSelect a rarity:"
-                ).format(slot=str(self._selected_slot), note=note),
+                description=_("**Slot:** {slot}{note}\n\nSelect a set:").format(
+                    slot=str(self._selected_slot), note=note
+                ),
                 colour=discord.Colour.blue(),
             )
 
         else:
+            n = len(self._items_for_slot_set(self._selected_slot, self._selected_set))
             return discord.Embed(
                 title=_("Set Equipment — {user}").format(user=user_str),
                 description=_(
-                    "**Slot:** {slot}\n**Rarity:** {rarity}\n\nSelect an item:"
+                    "**Slot:** {slot}\n**Set:** {set_name}\n{n} item(s)\n\nSelect an item:"
                 ).format(
                     slot=str(self._selected_slot),
-                    rarity=str(self._selected_rarity),
+                    set_name=self._selected_set,
+                    n=n,
                 ),
                 colour=discord.Colour.blue(),
             )

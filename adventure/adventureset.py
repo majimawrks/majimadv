@@ -14,7 +14,7 @@ from redbot.core.utils.chat_formatting import bold, box, humanize_list, humanize
 
 from .abc import AdventureMixin
 from .bank import bank
-from .charsheet import Character
+from .charsheet import Character, Item
 from .constants import HeroClasses, Slot
 from .converters import DayConverter, PercentageConverter, parse_timedelta
 from .helpers import has_separated_economy, smart_embed
@@ -463,7 +463,7 @@ class AdventureSetCommands(AdventureMixin):
     @adventureset.command(name="setequip")
     @owner_or_server_admin()
     async def set_user_equip(self, ctx: commands.Context, user: Union[discord.Member, discord.User]):
-        """[Admin] Set a user's equipped items via an interactive menu (legendary+ only)."""
+        """[Admin] Set a user's equipped items from the full TR_GEAR_SET via an interactive menu."""
         async with self.get_lock(user):
             try:
                 c = await Character.from_json(ctx, self.config, user, self._daily_bonus)
@@ -471,7 +471,7 @@ class AdventureSetCommands(AdventureMixin):
                 log.exception("Error with the new character sheet", exc_info=exc)
                 return
 
-        view = EquipSetMenu(ctx, user, c)
+        view = EquipSetMenu(ctx, user, c, self.TR_GEAR_SET)
         message = await ctx.send(embed=view._make_embed(), view=view)
         view.message = message
         await view.wait()
@@ -485,17 +485,16 @@ class AdventureSetCommands(AdventureMixin):
             except Exception as exc:
                 log.exception("Error with the new character sheet", exc_info=exc)
                 return
-            for slot, item in view._queued.items():
-                if item.name not in c.backpack:
-                    log.warning(
-                        "setequip: item %s no longer in %s's backpack, skipping",
-                        item.name, user,
-                    )
+            for slot, item_name in view._queued.items():
+                raw = self.TR_GEAR_SET.get(item_name)
+                if not raw:
+                    log.warning("setequip: %s not found in TR_GEAR_SET, skipping", item_name)
                     continue
-                c = await c.equip_item(item, from_backpack=True, dev=True)
+                item = Item.from_json(ctx, {item_name: {**raw, "owned": 1}})
+                c = await c.equip_item(item, from_backpack=False, dev=True)
             await self.config.user(user).set(await c.to_json(ctx, self.config))
 
-        equipped = humanize_list([str(i) for i in view._queued.values()])
+        equipped = humanize_list(list(view._queued.values()))
         await smart_embed(
             ctx,
             _("Equipped {items} on {user}.").format(items=equipped, user=bold(str(user))),
