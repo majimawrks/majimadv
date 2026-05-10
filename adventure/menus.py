@@ -12,6 +12,7 @@ from redbot.vendored.discord.ext import menus
 
 from .bank import bank
 from .charsheet import Character
+from .constants import Rarities, Slot
 from .helpers import is_dev, smart_embed
 
 if TYPE_CHECKING:
@@ -1404,3 +1405,378 @@ class PetSelectMenu(discord.ui.View):
         )
         embed.add_field(name=_("Status"), value=status_line, inline=False)
         return embed
+
+
+# ── EquipSetMenu ─────────────────────────────────────────────────────────────
+
+_HIGH_RARITIES: List[Rarities] = [
+    Rarities.legendary,
+    Rarities.ascended,
+    Rarities.set,
+    Rarities.forged,
+    Rarities.event,
+]
+_EQUIP_SLOTS: List[Slot] = [s for s in Slot if s is not Slot.two_handed]
+_DUAL_WIELD_SLOTS: frozenset = frozenset({Slot.left, Slot.right})
+
+
+class EquipSetMenu(discord.ui.View):
+    """Three-tiered admin menu for force-equipping items on a user.
+
+    Tier 1 — Slot selection (all slots shown with current item + queued item).
+    Tier 2 — Rarity selection (legendary+ only, filtered to what's in backpack).
+    Tier 3 — Item selection (paginated, sorted best-first).
+
+    Selections are queued locally; all changes are applied atomically on Done.
+    """
+
+    _PER_PAGE: int = 25
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        target_user: Union[discord.Member, discord.User],
+        character: Character,
+        timeout: int = 300,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.ctx = ctx
+        self.target_user = target_user
+        self.message: Optional[discord.Message] = None
+        self.confirmed: bool = False
+
+        # Snapshot backpack & current equipment at open time
+        self._backpack: Dict[str, Any] = dict(character.backpack)
+        self._equipped: Dict[Slot, Optional[Any]] = {
+            slot: slot.get_item_slot(character) for slot in _EQUIP_SLOTS
+        }
+
+        # slot → item queued by the admin this session
+        self._queued: Dict[Slot, Any] = {}
+
+        # State
+        self._tier: int = 1
+        self._selected_slot: Optional[Slot] = None
+        self._selected_rarity: Optional[Rarities] = None
+        self._page: int = 0
+
+        self._rarity_emojis: Dict[Rarities, str] = Rarities.emojis()
+        self._rebuild()
+
+    # ── guard ────────────────────────────────────────────────────────────────
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                _("This menu is not for you."), ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.confirmed = False
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+    # ── item helpers ─────────────────────────────────────────────────────────
+
+    def _compatible_items(self, slot: Slot) -> List[Any]:
+        """Backpack items usable in *slot*, legendary+ only, sorted best-first."""
+        out = []
+        for item in self._backpack.values():
+            if item.rarity.value < Rarities.legendary.value:
+                continue
+            if item.rarity is Rarities.pet:
+                continue
+            if slot in _DUAL_WIELD_SLOTS:
+                if item.slot not in (slot, Slot.two_handed):
+                    continue
+            elif item.slot is not slot:
+                continue
+            out.append(item)
+        return sorted(out, key=lambda i: (i.rarity.value, i.lvl, i.total_stats), reverse=True)
+
+    def _items_for_rarity(self, slot: Slot, rarity: Rarities) -> List[Any]:
+        return [i for i in self._compatible_items(slot) if i.rarity is rarity]
+
+    def _available_rarities(self, slot: Slot) -> List[Rarities]:
+        compat = self._compatible_items(slot)
+        return [r for r in _HIGH_RARITIES if any(i.rarity is r for i in compat)]
+
+    # ── rebuild ───────────────────────────────────────────────────────────────
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        if self._tier == 1:
+            self._build_tier1()
+        elif self._tier == 2:
+            self._build_tier2()
+        else:
+            self._build_tier3()
+
+    # ── tier 1: slot selection ────────────────────────────────────────────────
+
+    def _slot_desc(self, slot: Slot) -> str:
+        n = len(self._compatible_items(slot))
+        current = self._equipped.get(slot)
+        queued = self._queued.get(slot)
+        item_str = str(queued) if queued else (str(current) if current else _("Empty"))
+        marker = " \N{LEFTWARDS ARROW WITH HOOK}" if queued else ""
+        tail = f" [{n} avail]" if n else _(" [no items]")
+        return f"{item_str}{marker}{tail}"[:100]
+
+    def _build_tier1(self) -> None:
+        options: List[discord.SelectOption] = []
+        for slot in _EQUIP_SLOTS:
+            queued = self._queued.get(slot)
+            current = self._equipped.get(slot)
+            ref = queued or current
+            emoji = self._rarity_emojis.get(ref.rarity) if ref else None
+            options.append(discord.SelectOption(
+                label=str(slot),
+                value=slot.name,
+                description=self._slot_desc(slot),
+                emoji=emoji,
+            ))
+
+        sel = discord.ui.Select(
+            placeholder=_("Select a slot to set…"),
+            min_values=1, max_values=1,
+            options=options,
+            row=0,
+        )
+
+        async def _on_slot(interaction: discord.Interaction) -> None:
+            self._selected_slot = Slot[sel.values[0]]
+            self._selected_rarity = None
+            self._page = 0
+            self._tier = 2
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+        sel.callback = _on_slot
+        self.add_item(sel)
+
+        done = discord.ui.Button(
+            label=_("Done"), style=discord.ButtonStyle.green,
+            emoji="\N{WHITE HEAVY CHECK MARK}", row=1,
+        )
+        done.callback = self._do_done
+        self.add_item(done)
+
+        cancel = discord.ui.Button(
+            label=_("Cancel"), style=discord.ButtonStyle.red,
+            emoji="\N{CROSS MARK}", row=1,
+        )
+        cancel.callback = self._do_cancel
+        self.add_item(cancel)
+
+    # ── tier 2: rarity selection ──────────────────────────────────────────────
+
+    def _build_tier2(self) -> None:
+        rarities = self._available_rarities(self._selected_slot)
+
+        if rarities:
+            options: List[discord.SelectOption] = []
+            for rarity in rarities:
+                n = len(self._items_for_rarity(self._selected_slot, rarity))
+                options.append(discord.SelectOption(
+                    label=str(rarity),
+                    value=rarity.name,
+                    description=_("{n} item(s) available").format(n=n),
+                    emoji=self._rarity_emojis.get(rarity),
+                ))
+
+            sel = discord.ui.Select(
+                placeholder=_("Select a rarity…"),
+                min_values=1, max_values=1,
+                options=options,
+                row=0,
+            )
+
+            async def _on_rarity(interaction: discord.Interaction) -> None:
+                self._selected_rarity = Rarities[sel.values[0]]
+                self._page = 0
+                self._tier = 3
+                self._rebuild()
+                await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+            sel.callback = _on_rarity
+            self.add_item(sel)
+
+        back = discord.ui.Button(
+            label=_("Back"), style=discord.ButtonStyle.grey,
+            emoji="\N{LEFTWARDS ARROW WITH HOOK}\N{VARIATION SELECTOR-16}", row=1,
+        )
+        back.callback = self._do_back
+        self.add_item(back)
+
+        cancel = discord.ui.Button(
+            label=_("Cancel"), style=discord.ButtonStyle.red,
+            emoji="\N{CROSS MARK}", row=1,
+        )
+        cancel.callback = self._do_cancel
+        self.add_item(cancel)
+
+    # ── tier 3: item selection ────────────────────────────────────────────────
+
+    def _build_tier3(self) -> None:
+        all_items = self._items_for_rarity(self._selected_slot, self._selected_rarity)
+        page_items = all_items[self._page * self._PER_PAGE: (self._page + 1) * self._PER_PAGE]
+
+        options: List[discord.SelectOption] = []
+        for abs_idx, item in enumerate(page_items, self._page * self._PER_PAGE):
+            stat = item.stat_str()
+            if len(stat) > 100:
+                stat = stat[:97] + "…"
+            options.append(discord.SelectOption(
+                label=str(item)[:100],
+                value=str(abs_idx),
+                description=stat,
+                emoji=self._rarity_emojis.get(item.rarity),
+            ))
+
+        sel = discord.ui.Select(
+            placeholder=_("Select an item…"),
+            min_values=1, max_values=1,
+            options=options,
+            row=0,
+        )
+
+        async def _on_item(interaction: discord.Interaction) -> None:
+            chosen = all_items[int(sel.values[0])]
+            self._queued[self._selected_slot] = chosen
+            self._selected_slot = None
+            self._selected_rarity = None
+            self._tier = 1
+            self._page = 0
+            self._rebuild()
+            await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+        sel.callback = _on_item
+        self.add_item(sel)
+
+        if self._page > 0:
+            prev = discord.ui.Button(label=_("◄ Prev"), style=discord.ButtonStyle.grey, row=1)
+            prev.callback = self._do_prev
+            self.add_item(prev)
+        if (self._page + 1) * self._PER_PAGE < len(all_items):
+            nxt = discord.ui.Button(label=_("Next ►"), style=discord.ButtonStyle.grey, row=1)
+            nxt.callback = self._do_next
+            self.add_item(nxt)
+
+        back = discord.ui.Button(
+            label=_("Back"), style=discord.ButtonStyle.grey,
+            emoji="\N{LEFTWARDS ARROW WITH HOOK}\N{VARIATION SELECTOR-16}", row=2,
+        )
+        back.callback = self._do_back
+        self.add_item(back)
+
+        cancel = discord.ui.Button(
+            label=_("Cancel"), style=discord.ButtonStyle.red,
+            emoji="\N{CROSS MARK}", row=2,
+        )
+        cancel.callback = self._do_cancel
+        self.add_item(cancel)
+
+    # ── shared callbacks ──────────────────────────────────────────────────────
+
+    async def _do_done(self, interaction: discord.Interaction) -> None:
+        if not self._queued:
+            await interaction.response.send_message(
+                _("No slots were changed."), ephemeral=True
+            )
+            return
+        self.confirmed = True
+        self.stop()
+        lines = [
+            f"**{str(slot)}** → {str(item)}"
+            for slot, item in self._queued.items()
+        ]
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title=_("Applying equipment…"),
+                description="\n".join(lines),
+                colour=discord.Colour.green(),
+            ),
+            view=None,
+        )
+
+    async def _do_cancel(self, interaction: discord.Interaction) -> None:
+        self.confirmed = False
+        self.stop()
+        await interaction.response.edit_message(
+            embed=discord.Embed(title=_("Cancelled"), colour=discord.Colour.red()),
+            view=None,
+        )
+
+    async def _do_back(self, interaction: discord.Interaction) -> None:
+        if self._tier == 3:
+            self._tier = 2
+            self._selected_rarity = None
+        elif self._tier == 2:
+            self._tier = 1
+            self._selected_slot = None
+        self._page = 0
+        self._rebuild()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    async def _do_prev(self, interaction: discord.Interaction) -> None:
+        self._page -= 1
+        self._rebuild()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    async def _do_next(self, interaction: discord.Interaction) -> None:
+        self._page += 1
+        self._rebuild()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    # ── embed ─────────────────────────────────────────────────────────────────
+
+    def _make_embed(self) -> discord.Embed:
+        user_str = bold(str(self.target_user))
+
+        if self._tier == 1:
+            lines: List[str] = []
+            for slot, item in self._queued.items():
+                prev = self._equipped.get(slot)
+                prev_str = str(prev) if prev else _("Empty")
+                lines.append(f"**{str(slot)}:** {prev_str} → **{str(item)}**")
+            if lines:
+                body = _("**Queued ({n}):**\n").format(n=len(lines)) + "\n".join(lines)
+            else:
+                body = _("No changes queued yet. Select a slot below.")
+            return discord.Embed(
+                title=_("Set Equipment — {user}").format(user=user_str),
+                description=body,
+                colour=discord.Colour.blurple(),
+            )
+
+        elif self._tier == 2:
+            rarities = self._available_rarities(self._selected_slot)
+            if not rarities:
+                note = _("\n\n\N{WARNING SIGN} No legendary+ items in backpack for this slot.")
+            else:
+                note = ""
+            return discord.Embed(
+                title=_("Set Equipment — {user}").format(user=user_str),
+                description=_(
+                    "**Slot:** {slot}{note}\n\nSelect a rarity:"
+                ).format(slot=str(self._selected_slot), note=note),
+                colour=discord.Colour.blue(),
+            )
+
+        else:
+            return discord.Embed(
+                title=_("Set Equipment — {user}").format(user=user_str),
+                description=_(
+                    "**Slot:** {slot}\n**Rarity:** {rarity}\n\nSelect an item:"
+                ).format(
+                    slot=str(self._selected_slot),
+                    rarity=str(self._selected_rarity),
+                ),
+                colour=discord.Colour.blue(),
+            )

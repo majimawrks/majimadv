@@ -18,13 +18,31 @@ from .charsheet import Character
 from .constants import HeroClasses, Slot
 from .converters import DayConverter, PercentageConverter, parse_timedelta
 from .helpers import has_separated_economy, smart_embed
-from .menus import PetSelectMenu
+from .menus import EquipSetMenu, PetSelectMenu
 
 _ = Translator("Adventure", __file__)
 
 log = logging.getLogger("red.cogs.adventure")
 
 TaxesConverter = get_dict_converter(delims=[" ", ",", ";"])
+
+
+def owner_or_server_admin():
+    """Bot owner, guild owner, server administrator permission, or Red admin role."""
+
+    async def pred(ctx: commands.Context) -> bool:
+        if await ctx.bot.is_owner(ctx.author):
+            return True
+        if not ctx.guild:
+            return False
+        if ctx.author == ctx.guild.owner:
+            return True
+        if ctx.channel.permissions_for(ctx.author).administrator:
+            return True
+        admin_role_ids = await ctx.bot.get_admin_role_ids(ctx.guild.id)
+        return any(role.id in admin_role_ids for role in ctx.author.roles)
+
+    return commands.check(pred)
 
 
 def check_global_setting_admin():
@@ -398,7 +416,7 @@ class AdventureSetCommands(AdventureMixin):
         await ctx.send(_("{item} removed from {user}.").format(item=box(str(item), lang="ansi"), user=bold(user)))
 
     @adventureset.command(name="setpet")
-    @commands.is_owner()
+    @owner_or_server_admin()
     async def set_user_pet(self, ctx: commands.Context, user: Union[discord.Member, discord.User]):
         """[Owner] Set a Ranger's pet via an interactive menu."""
         # Quick class check before opening the menu
@@ -441,6 +459,47 @@ class AdventureSetCommands(AdventureMixin):
                 )
             c.heroclass["pet"] = pet_list[view.result]
             await self.config.user(user).set(await c.to_json(ctx, self.config))
+
+    @adventureset.command(name="setequip")
+    @owner_or_server_admin()
+    async def set_user_equip(self, ctx: commands.Context, user: Union[discord.Member, discord.User]):
+        """[Admin] Set a user's equipped items via an interactive menu (legendary+ only)."""
+        async with self.get_lock(user):
+            try:
+                c = await Character.from_json(ctx, self.config, user, self._daily_bonus)
+            except Exception as exc:
+                log.exception("Error with the new character sheet", exc_info=exc)
+                return
+
+        view = EquipSetMenu(ctx, user, c)
+        message = await ctx.send(embed=view._make_embed(), view=view)
+        view.message = message
+        await view.wait()
+
+        if not view.confirmed or not view._queued:
+            return
+
+        async with self.get_lock(user):
+            try:
+                c = await Character.from_json(ctx, self.config, user, self._daily_bonus)
+            except Exception as exc:
+                log.exception("Error with the new character sheet", exc_info=exc)
+                return
+            for slot, item in view._queued.items():
+                if item.name not in c.backpack:
+                    log.warning(
+                        "setequip: item %s no longer in %s's backpack, skipping",
+                        item.name, user,
+                    )
+                    continue
+                c = await c.equip_item(item, from_backpack=True, dev=True)
+            await self.config.user(user).set(await c.to_json(ctx, self.config))
+
+        equipped = humanize_list([str(i) for i in view._queued.values()])
+        await smart_embed(
+            ctx,
+            _("Equipped {items} on {user}.").format(items=equipped, user=bold(str(user))),
+        )
 
     @adventureset.command()
     @commands.is_owner()
