@@ -1333,6 +1333,7 @@ class PetSelectMenu(discord.ui.View):
     def _make_pet_embed(self) -> discord.Embed:
         data = self.pet_list.get(self.result, {})
         bonuses = data.get("bonuses", {})
+        req_set = bonuses.get("req", {}).get("set")
         embed = discord.Embed(
             title=_("Set Pet \N{EM DASH} Confirm"),
             description=_(
@@ -1345,4 +1346,10 @@ class PetSelectMenu(discord.ui.View):
         embed.add_field(name=_("CHA Required"), value=humanize_number(int(data.get("cha", 0))))
         embed.add_field(name=_("Always Active"), value=_("Yes") if bonuses.get("always") else _("No"))
         embed.add_field(name=_("Crit Chance"), value=f"{bonuses.get('crit', 0)}%")
+        if req_set:
+            embed.add_field(
+                name=_("\N{WARNING SIGN} Set Required"),
+                value=req_set,
+                inline=False,
+            )
         return embed
