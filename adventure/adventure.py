@@ -1006,7 +1006,7 @@ class Adventure(
         session = self._sessions[ctx.guild.id]
         easy_mode = session.easy_mode
         embed = discord.Embed(colour=discord.Colour.blurple())
-        embed.set_footer(text=f"Seed {hex(session.rng.internal_seed)[2:].upper()}")
+        #embed.set_footer(text=f"Seed {hex(session.rng.internal_seed)[2:].upper()}")
         use_embeds = await self.config.guild(ctx.guild).embed() and ctx.channel.permissions_for(ctx.me).embed_links
         if easy_mode:
             dragon_text = _(
