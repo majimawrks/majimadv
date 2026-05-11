@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import time
+import hashlib
 from abc import ABC
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -1006,6 +1007,9 @@ class Adventure(
         session = self._sessions[ctx.guild.id]
         easy_mode = session.easy_mode
         embed = discord.Embed(colour=discord.Colour.blurple())
+        real_seed = str(int(session.rng.internal_seed)).encode()
+        fake_seed = hashlib.blake2s(real_seed, digest_size=8).hexdigest().upper()
+        embed.set_footer(text=f"Seed {fake_seed}")
         #embed.set_footer(text=f"Seed {hex(session.rng.internal_seed)[2:].upper()}")
         use_embeds = await self.config.guild(ctx.guild).embed() and ctx.channel.permissions_for(ctx.me).embed_links
         if easy_mode:
