@@ -691,7 +691,7 @@ class Adventure(
 
         await ctx.bot.on_command_error(ctx, error, unhandled_by_cog=not handled)
 
-    async def get_challenge(self, monsters: Dict[str, Monster], rng: Random):
+    async def get_challenge(self, monsters: Dict[str, Monster], rng: Random, channel_buff: Optional[dict] = None):
         possible_monsters = []
         stat_range = rng.internal_seed.stat_range
         log.debug("Random Seed is %s", int(rng.internal_seed))
@@ -702,7 +702,8 @@ class Adventure(
             if not appropriate_range:
                 continue
             if not stats["boss"] and not stats["miniboss"]:
-                break_at = rng.randint(1, 15)
+                upper = 2 if channel_buff else 15
+                break_at = rng.randint(1, upper)
                 # log.debug("Adding monster %s times", break_at)
                 possible_monsters.extend([m for i in range(1, break_at)])
             else:

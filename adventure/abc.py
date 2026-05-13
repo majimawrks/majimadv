@@ -140,7 +140,7 @@ class AdventureMixin(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    async def get_challenge(self, monsters: Dict[str, Monster], rng: Random):
+    async def get_challenge(self, monsters: Dict[str, Monster], rng: Random, channel_buff: Optional[dict] = None):
         raise NotImplementedError()
 
     @abstractmethod
