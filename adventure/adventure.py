@@ -96,10 +96,14 @@ class TributeView(discord.ui.View):
         cancel.callback = self._cancel_callback
         self.add_item(cancel)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("This is not your tribute.", ephemeral=True)
+            return False
+        return True
+
     def _make_callback(self, seconds: int, cost: int):
         async def callback(interaction: discord.Interaction):
-            if interaction.user != self.ctx.author:
-                return await interaction.response.send_message("This is not your tribute.", ephemeral=True)
             self.chosen_duration = seconds
             self.chosen_cost = cost
             self.stop()
@@ -107,10 +111,11 @@ class TributeView(discord.ui.View):
         return callback
 
     async def _cancel_callback(self, interaction: discord.Interaction):
-        if interaction.user != self.ctx.author:
-            return await interaction.response.send_message("This is not your tribute.", ephemeral=True)
         self.stop()
         await interaction.response.defer()
+
+    async def on_timeout(self):
+        pass
 
 
 @cog_i18n(_)
@@ -793,6 +798,10 @@ class Adventure(
             colour=await ctx.embed_colour(),
         )
 
+        existing = self._get_channel_buff(ctx.channel.id)
+        if existing:
+            return await smart_embed(ctx, _("This channel already has an active blessing. Wait for it to expire."))
+
         view = TributeView(ctx, buff_type, god)
         msg = await ctx.send(embed=embed, view=view)
         await view.wait()
@@ -808,7 +817,7 @@ class Adventure(
 
         try:
             await bank.withdraw_credits(ctx.author, view.chosen_cost)
-        except Exception:
+        except ValueError:
             return await msg.edit(
                 embed=discord.Embed(
                     title=_("Not enough coins."),
@@ -841,9 +850,10 @@ class Adventure(
             )
         )
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._tribute_expiry_notify(ctx.channel, ctx.author, god, view.chosen_duration)
         )
+        self.tasks[f"tribute_{ctx.channel.id}"] = task
 
     async def _tribute_expiry_notify(
         self,
