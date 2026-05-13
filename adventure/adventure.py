@@ -745,6 +745,123 @@ class Adventure(
             del self._channel_buffs[channel_id]
         return None
 
+    @commands.hybrid_command(name="tribute")
+    @commands.guild_only()
+    @commands.bot_has_permissions(embed_links=True)
+    async def tribute(self, ctx: commands.Context, buff_type: Optional[str] = None):
+        """Pay tribute to the god for a channel encounter buff.
+
+        buff_type: transcended, immortal, divine (all), or omit for boss/miniboss only.
+        """
+        if buff_type and buff_type.lower() not in ("transcended", "immortal", "divine"):
+            return await smart_embed(
+                ctx, _("Invalid buff type. Use: `transcended`, `immortal`, `divine`, or leave blank.")
+            )
+        buff_type = buff_type.lower() if buff_type else None
+
+        god = await self.config.god_name()
+        guild_god = await self.config.guild(ctx.guild).god_name()
+        if guild_god:
+            god = guild_god
+
+        extra = TRIBUTE_EXTRA_COSTS.get(buff_type, 0) if buff_type else 0
+        buff_lines = ["• Boss & Miniboss encounters: **~30%** (base ~3%)"]
+        if buff_type in ("transcended", "divine"):
+            buff_lines.append("• Transcended encounters: **~30%** (base ~9%)")
+        if buff_type in ("immortal", "divine"):
+            buff_lines.append("• Immortal attribute: **significantly more likely**")
+        buff_lines.append("")
+        buff_lines.append("_Results may vary — the gods do not make guarantees._")
+
+        costs_text = "\n".join(
+            f"• {label}: **{humanize_number(TRIBUTE_BASE_COSTS[s] + extra)}** coins"
+            for s, label in TributeView.DURATIONS
+        )
+
+        embed = discord.Embed(
+            title=_("🙏 Pay Tribute to {god}?").format(god=god),
+            description=_(
+                "You kneel before the altar of **{god}**, offering coins in exchange for divine favour upon {channel}.\n\n"
+                "**Buffs granted (rough estimates only):**\n{buffs}\n\n"
+                "**Duration costs:**\n{costs}"
+            ).format(
+                god=god,
+                channel=ctx.channel.mention,
+                buffs="\n".join(buff_lines),
+                costs=costs_text,
+            ),
+            colour=await ctx.embed_colour(),
+        )
+
+        view = TributeView(ctx, buff_type, god)
+        msg = await ctx.send(embed=embed, view=view)
+        await view.wait()
+        await msg.edit(view=None)
+
+        if view.chosen_duration is None:
+            return await msg.edit(
+                embed=discord.Embed(
+                    title=_("Tribute cancelled."),
+                    colour=await ctx.embed_colour(),
+                )
+            )
+
+        try:
+            await bank.withdraw_credits(ctx.author, view.chosen_cost)
+        except Exception:
+            return await msg.edit(
+                embed=discord.Embed(
+                    title=_("Not enough coins."),
+                    description=_("You need {cost} coins to pay this tribute.").format(
+                        cost=humanize_number(view.chosen_cost)
+                    ),
+                    colour=discord.Colour.red(),
+                )
+            )
+
+        duration_label = next(label for s, label in TributeView.DURATIONS if s == view.chosen_duration)
+        self._channel_buffs[ctx.channel.id] = {
+            "expires": time.time() + view.chosen_duration,
+            "transcended": buff_type in ("transcended", "divine"),
+            "immortal": buff_type in ("immortal", "divine"),
+        }
+
+        await msg.edit(
+            embed=discord.Embed(
+                title=_("✨ {god} accepts your tribute!").format(god=god),
+                description=_(
+                    "**{god}** smiles upon {channel}. For the next **{duration}**, encounters here are blessed.\n\n{buffs}"
+                ).format(
+                    god=god,
+                    channel=ctx.channel.mention,
+                    duration=duration_label,
+                    buffs="\n".join(buff_lines[:-2]),
+                ),
+                colour=discord.Colour.gold(),
+            )
+        )
+
+        asyncio.create_task(
+            self._tribute_expiry_notify(ctx.channel, ctx.author, god, view.chosen_duration)
+        )
+
+    async def _tribute_expiry_notify(
+        self,
+        channel: discord.TextChannel,
+        invoker: discord.Member,
+        god: str,
+        duration: int,
+    ):
+        await asyncio.sleep(duration)
+        with contextlib.suppress(discord.HTTPException):
+            await channel.send(
+                _("The blessing of **{god}** has faded from {channel}, {mention}.").format(
+                    god=god,
+                    channel=channel.mention,
+                    mention=invoker.mention,
+                )
+            )
+
     async def get_challenge(self, monsters: Dict[str, Monster], rng: Random, channel_buff: dict | None = None):
         possible_monsters = []
         stat_range = rng.internal_seed.stat_range

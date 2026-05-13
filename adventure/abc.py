@@ -132,6 +132,10 @@ class AdventureMixin(ABC):
         raise NotImplementedError()
 
     @abstractmethod
+    async def tribute(self, ctx: commands.Context, buff_type: Optional[str] = None):
+        raise NotImplementedError()
+
+    @abstractmethod
     async def _error_handler(self, ctx: commands.Context, error: Exception) -> None:
         raise NotImplementedError()
 
