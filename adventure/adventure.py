@@ -65,6 +65,54 @@ class CompositeMetaClass(type(commands.Cog), type(ABC)):
     pass
 
 
+TRIBUTE_BASE_COSTS = {5 * 60: 500_000, 10 * 60: 700_000, 15 * 60: 1_000_000}
+TRIBUTE_EXTRA_COSTS = {"transcended": 100_000, "immortal": 250_000, "divine": 300_000}
+
+
+class TributeView(discord.ui.View):
+    DURATIONS = [(5 * 60, "5 min"), (10 * 60, "10 min"), (15 * 60, "15 min")]
+
+    def __init__(self, ctx: commands.Context, buff_type: str | None, god: str):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.buff_type = buff_type
+        self.god = god
+        self.chosen_duration: int | None = None
+        self.chosen_cost: int | None = None
+        extra = TRIBUTE_EXTRA_COSTS.get(buff_type, 0) if buff_type else 0
+        for seconds, label in self.DURATIONS:
+            cost = TRIBUTE_BASE_COSTS[seconds] + extra
+            btn = discord.ui.Button(
+                label=f"{label} — {humanize_number(cost)} coins",
+                style=discord.ButtonStyle.blurple,
+            )
+            btn.callback = self._make_callback(seconds, cost)
+            self.add_item(btn)
+        cancel = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.red,
+            emoji="\N{HEAVY MULTIPLICATION X}\N{VARIATION SELECTOR-16}",
+        )
+        cancel.callback = self._cancel_callback
+        self.add_item(cancel)
+
+    def _make_callback(self, seconds: int, cost: int):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user != self.ctx.author:
+                return await interaction.response.send_message("This is not your tribute.", ephemeral=True)
+            self.chosen_duration = seconds
+            self.chosen_cost = cost
+            self.stop()
+            await interaction.response.defer()
+        return callback
+
+    async def _cancel_callback(self, interaction: discord.Interaction):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("This is not your tribute.", ephemeral=True)
+        self.stop()
+        await interaction.response.defer()
+
+
 @cog_i18n(_)
 class Adventure(
     AdventureSetCommands,
