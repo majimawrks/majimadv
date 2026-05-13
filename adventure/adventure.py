@@ -833,7 +833,7 @@ class Adventure(
         return choice
 
     async def update_monster_roster(
-        self, c: Optional[Character] = None, rng: Optional[Random] = None
+        self, c: Optional[Character] = None, rng: Optional[Random] = None, channel_buff: dict | None = None
     ) -> Tuple[Dict[str, Monster], float, bool]:
         """
         Gets the current list of available monsters, their stats, and whether
@@ -863,13 +863,17 @@ class Adventure(
         transcended = False
         # set our default return values first
         monster_stats = 1.0
-        if transcended_chance == 5:
+        transcended_hit = (
+            (channel_buff and channel_buff.get("transcended") and random.random() < 0.30)
+            or transcended_chance == 5
+        )
+        if transcended_hit:
             monster_stats = 2.0
 
         # if this is a normal adventure start e.g. not a bot owner
         # picking the adventure, then we can randomly adjust the stats
         if c is not None:
-            if transcended_chance == 5:
+            if transcended_hit:
                 monster_stats = 2 + max((c.rebirths // 10) - 1, 0)
                 transcended = True
             elif c.rebirths >= 10:
