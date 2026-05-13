@@ -207,7 +207,7 @@ class TributeCommands(AdventureMixin):
                 return await msg.edit(embed=cancelled_embed, view=None)
 
             buff_type = type_view.chosen_type
-            _, blessing_label = TRIBUTE_TYPE_LABELS[buff_type]
+            _ignored, blessing_label = TRIBUTE_TYPE_LABELS[buff_type]
             buff_lines = TRIBUTE_BUFF_DESCRIPTIONS[buff_type]
             extra = TRIBUTE_EXTRA_COSTS.get(buff_type, 0) if buff_type else 0
 
