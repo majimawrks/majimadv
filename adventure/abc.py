@@ -60,6 +60,7 @@ class AdventureMixin(ABC):
         self.tasks = {}
         self.locks: MutableMapping[int, asyncio.Lock] = {}
         self.gb_task = None
+        self._channel_buffs: dict = {}
 
         self.RAISINS: list = None
         self.THREATEE: list = None
