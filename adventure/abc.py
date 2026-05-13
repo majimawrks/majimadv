@@ -767,3 +767,15 @@ class AdventureMixin(ABC):
     @abstractmethod
     async def themeset_list_pet(self, ctx: commands.Context, *, theme: str):
         raise NotImplementedError()
+
+    #######################################################################
+    # tribute.py                                                          #
+    #######################################################################
+
+    @abstractmethod
+    async def tribute(self, ctx: commands.Context):
+        raise NotImplementedError()
+
+    @abstractmethod
+    async def _tribute_expiry_notify(self, channel, invoker, god: str, duration: int):
+        raise NotImplementedError()

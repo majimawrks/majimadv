@@ -45,6 +45,7 @@ from .negaverse import Negaverse
 from .rebirth import RebirthCommands
 from .rng import GameSeed, Random
 from .themeset import ThemesetCommands
+from .tribute import TributeCommands
 from .types import Monster
 
 _ = Translator("Adventure", __file__)
@@ -79,6 +80,7 @@ class Adventure(
     Negaverse,
     RebirthCommands,
     ThemesetCommands,
+    TributeCommands,
     commands.GroupCog,
     metaclass=CompositeMetaClass,
 ):
