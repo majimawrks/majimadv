@@ -302,6 +302,28 @@ class AdventureSetCommands(AdventureMixin):
             _("Adventure cooldown set to {cooldown} seconds.").format(cooldown=time_in_seconds),
         )
 
+    @adventureset.command(name="tributecd")
+    @commands.admin_or_permissions(administrator=True)
+    @commands.guild_only()
+    async def tributecd(self, ctx: commands.Context, *, time_str: str):
+        """[Admin] Set the guild-wide tribute cooldown.
+
+        Accepts time units: `s` (seconds), `h` (hours), `d` (days).
+        Examples: `72h`, `3600s`, `2d`
+        Minimum: 60 seconds.
+        """
+        time_delta = parse_timedelta(time_str)
+        if time_delta is None:
+            return await smart_embed(ctx, _("Invalid time format. Use e.g. `72h`, `3600s`, `2d`."))
+        total_seconds = int(time_delta.total_seconds())
+        if total_seconds < 60:
+            return await smart_embed(ctx, _("Tribute cooldown must be at least 60 seconds."))
+        await self.config.guild(ctx.guild).tribute_cooldown.set(total_seconds)
+        await smart_embed(
+            ctx,
+            _("Tribute cooldown set to **{time}**.").format(time=time_str),
+        )
+
     @adventureset.command()
     async def version(self, ctx: commands.Context):
         """Display the version of adventure being used."""

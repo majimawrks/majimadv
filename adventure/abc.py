@@ -300,6 +300,10 @@ class AdventureMixin(ABC):
         raise NotImplementedError()
 
     @abstractmethod
+    async def tributecd(self, ctx: commands.Context, *, time_str: str):
+        raise NotImplementedError()
+
+    @abstractmethod
     async def version(self, ctx: commands.Context):
         raise NotImplementedError()
 
