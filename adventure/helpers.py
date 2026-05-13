@@ -176,22 +176,11 @@ def _build_appraise_embeds(
         embed.set_footer(text="Page 1/1")
         return [embed]
 
-    pages = []
-    current_lines: list = []
-    current_len = len(header)
-
-    for line in item_lines:
-        line_len = len(line) + 1
-        if current_len + line_len > 3800 and current_lines:
-            pages.append(header + "\n".join(current_lines))
-            current_lines = [line]
-            current_len = len(header) + line_len
-        else:
-            current_lines.append(line)
-            current_len += line_len
-
-    if current_lines:
-        pages.append(header + "\n".join(current_lines))
+    per_page = 10
+    pages = [
+        header + "\n".join(item_lines[i : i + per_page])
+        for i in range(0, len(item_lines), per_page)
+    ]
 
     total = len(pages)
     embeds = []
