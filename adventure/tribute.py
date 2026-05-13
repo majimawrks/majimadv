@@ -175,116 +175,123 @@ class TributeCommands(AdventureMixin):
         if self._get_channel_buff(ctx.channel.id):
             return await smart_embed(ctx, _("This channel already has an active blessing. Wait for it to expire."))
 
-        god = await self.config.god_name()
-        guild_god = await self.config.guild(ctx.guild).god_name()
-        if guild_god:
-            god = guild_god
+        if ctx.channel.id in self._active_tribute_menus:
+            return await smart_embed(ctx, _("Someone is already paying tribute in this channel. Wait for them to finish."))
 
-        colour = await ctx.embed_colour()
-        cancelled_embed = discord.Embed(title=_("Tribute cancelled."), colour=colour)
+        self._active_tribute_menus.add(ctx.channel.id)
+        try:
+            god = await self.config.god_name()
+            guild_god = await self.config.guild(ctx.guild).god_name()
+            if guild_god:
+                god = guild_god
 
-        type_embed = discord.Embed(
-            title=_("\N{PERSON WITH FOLDED HANDS} Pay Tribute to {god}?").format(god=god),
-            description=_(
-                "You kneel before the altar of **{god}**, seeking divine favour upon {channel}.\n\n"
-                "Choose the blessing you wish to invoke:"
-            ).format(god=god, channel=ctx.channel.mention),
-            colour=colour,
-        )
+            colour = await ctx.embed_colour()
+            cancelled_embed = discord.Embed(title=_("Tribute cancelled."), colour=colour)
 
-        msg = None
-        buff_type = None
-
-        while True:
-            type_view = TributeTypeView(ctx)
-            if msg is None:
-                msg = await ctx.send(embed=type_embed, view=type_view)
-            else:
-                await msg.edit(embed=type_embed, view=type_view)
-            await type_view.wait()
-
-            if type_view.cancelled or not type_view._chosen:
-                return await msg.edit(embed=cancelled_embed, view=None)
-
-            buff_type = type_view.chosen_type
-            _ignored, blessing_label = TRIBUTE_TYPE_LABELS[buff_type]
-            buff_lines = TRIBUTE_BUFF_DESCRIPTIONS[buff_type]
-            extra = TRIBUTE_EXTRA_COSTS.get(buff_type, 0) if buff_type else 0
-
-            duration_embed = discord.Embed(
-                title=_("\N{PERSON WITH FOLDED HANDS} {blessing} — {god}").format(blessing=blessing_label, god=god),
+            type_embed = discord.Embed(
+                title=_("\N{PERSON WITH FOLDED HANDS} Pay Tribute to {god}?").format(god=god),
                 description=_(
-                    "**Buffs granted (rough estimates only):**\n{buffs}\n\n"
-                    "_Results may vary — the gods do not make guarantees._\n\n"
-                    "Choose how long the blessing should last:"
-                ).format(buffs="\n".join(buff_lines)),
+                    "You kneel before the altar of **{god}**, seeking divine favour upon {channel}.\n\n"
+                    "Choose the blessing you wish to invoke:"
+                ).format(god=god, channel=ctx.channel.mention),
                 colour=colour,
             )
 
-            duration_view = TributeDurationView(ctx, buff_type)
-            await msg.edit(embed=duration_embed, view=duration_view)
-            await duration_view.wait()
+            msg = None
+            buff_type = None
 
-            if duration_view.cancelled or duration_view.chosen_duration is None:
-                return await msg.edit(embed=cancelled_embed, view=None)
+            while True:
+                type_view = TributeTypeView(ctx)
+                if msg is None:
+                    msg = await ctx.send(embed=type_embed, view=type_view)
+                else:
+                    await msg.edit(embed=type_embed, view=type_view)
+                await type_view.wait()
 
-            if duration_view.went_back:
-                continue
+                if type_view.cancelled or not type_view._chosen:
+                    return await msg.edit(embed=cancelled_embed, view=None)
 
-            break
+                buff_type = type_view.chosen_type
+                _ignored, blessing_label = TRIBUTE_TYPE_LABELS[buff_type]
+                buff_lines = TRIBUTE_BUFF_DESCRIPTIONS[buff_type]
+                extra = TRIBUTE_EXTRA_COSTS.get(buff_type, 0) if buff_type else 0
 
-        await msg.edit(view=None)
-
-        if self._get_channel_buff(ctx.channel.id):
-            return await msg.edit(
-                embed=discord.Embed(
-                    title=_("A blessing was just applied to this channel."),
-                    description=_("Your tribute was not charged."),
-                    colour=discord.Colour.red(),
+                duration_embed = discord.Embed(
+                    title=_("\N{PERSON WITH FOLDED HANDS} {blessing} — {god}").format(blessing=blessing_label, god=god),
+                    description=_(
+                        "**Buffs granted (rough estimates only):**\n{buffs}\n\n"
+                        "_Results may vary — the gods do not make guarantees._\n\n"
+                        "Choose how long the blessing should last:"
+                    ).format(buffs="\n".join(buff_lines)),
+                    colour=colour,
                 )
-            )
 
-        try:
-            await bank.withdraw_credits(ctx.author, duration_view.chosen_cost)
-        except ValueError:
-            return await msg.edit(
+                duration_view = TributeDurationView(ctx, buff_type)
+                await msg.edit(embed=duration_embed, view=duration_view)
+                await duration_view.wait()
+
+                if duration_view.cancelled or duration_view.chosen_duration is None:
+                    return await msg.edit(embed=cancelled_embed, view=None)
+
+                if duration_view.went_back:
+                    continue
+
+                break
+
+            await msg.edit(view=None)
+
+            if self._get_channel_buff(ctx.channel.id):
+                return await msg.edit(
+                    embed=discord.Embed(
+                        title=_("A blessing was just applied to this channel."),
+                        description=_("Your tribute was not charged."),
+                        colour=discord.Colour.red(),
+                    )
+                )
+
+            try:
+                await bank.withdraw_credits(ctx.author, duration_view.chosen_cost)
+            except ValueError:
+                return await msg.edit(
+                    embed=discord.Embed(
+                        title=_("Not enough coins."),
+                        description=_("You need {cost} coins to pay this tribute.").format(
+                            cost=humanize_number(duration_view.chosen_cost)
+                        ),
+                        colour=discord.Colour.red(),
+                    )
+                )
+
+            duration_label = next(label for s, label in TributeDurationView.DURATIONS if s == duration_view.chosen_duration)
+            now = time.time()
+            self._channel_buffs[ctx.channel.id] = {
+                "expires": now + duration_view.chosen_duration,
+                "transcended": buff_type in ("transcended", "divine"),
+                "immortal": buff_type in ("immortal", "divine"),
+            }
+            await self.config.guild(ctx.guild).tribute_last_used.set(now)
+
+            await msg.edit(
                 embed=discord.Embed(
-                    title=_("Not enough coins."),
-                    description=_("You need {cost} coins to pay this tribute.").format(
-                        cost=humanize_number(duration_view.chosen_cost)
+                    title=_("\N{SPARKLES} {god} accepts your tribute!").format(god=god),
+                    description=_(
+                        "**{god}** smiles upon {channel}. For the next **{duration}**, encounters here are blessed.\n\n{buffs}"
+                    ).format(
+                        god=god,
+                        channel=ctx.channel.mention,
+                        duration=duration_label,
+                        buffs="\n".join(buff_lines),
                     ),
-                    colour=discord.Colour.red(),
+                    colour=discord.Colour.gold(),
                 )
             )
 
-        duration_label = next(label for s, label in TributeDurationView.DURATIONS if s == duration_view.chosen_duration)
-        now = time.time()
-        self._channel_buffs[ctx.channel.id] = {
-            "expires": now + duration_view.chosen_duration,
-            "transcended": buff_type in ("transcended", "divine"),
-            "immortal": buff_type in ("immortal", "divine"),
-        }
-        await self.config.guild(ctx.guild).tribute_last_used.set(now)
-
-        await msg.edit(
-            embed=discord.Embed(
-                title=_("\N{SPARKLES} {god} accepts your tribute!").format(god=god),
-                description=_(
-                    "**{god}** smiles upon {channel}. For the next **{duration}**, encounters here are blessed.\n\n{buffs}"
-                ).format(
-                    god=god,
-                    channel=ctx.channel.mention,
-                    duration=duration_label,
-                    buffs="\n".join(buff_lines),
-                ),
-                colour=discord.Colour.gold(),
+            task = asyncio.create_task(
+                self._tribute_expiry_notify(ctx.channel, ctx.author, god, duration_view.chosen_duration)
             )
-        )
-
-        task = asyncio.create_task(
-            self._tribute_expiry_notify(ctx.channel, ctx.author, god, duration_view.chosen_duration)
-        )
-        self.tasks[f"tribute_{ctx.channel.id}"] = task
+            self.tasks[f"tribute_{ctx.channel.id}"] = task
+        finally:
+            self._active_tribute_menus.discard(ctx.channel.id)
 
     async def _tribute_expiry_notify(
         self,

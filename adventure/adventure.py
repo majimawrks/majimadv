@@ -164,6 +164,7 @@ class Adventure(
         self.locks: MutableMapping[int, asyncio.Lock] = {}
         self.gb_task = None
         self._channel_buffs = {}
+        self._active_tribute_menus = set()
 
         self.config = Config.get_conf(self, 2_710_801_001, force_registration=True)
         self._daily_bonus = {}
