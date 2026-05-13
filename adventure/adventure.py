@@ -912,7 +912,7 @@ class Adventure(
             attribute = attribute.lower()
         else:
             if channel_buff and channel_buff.get("immortal"):
-                attrib_pool = list(self.ATTRIBS.keys()) + ["immortal"] * 9
+                attrib_pool = list(self.ATTRIBS.keys()) + ["n immortal"] * 9
                 attribute = rng.choice(attrib_pool)
             else:
                 attribute = rng.choice(list(self.ATTRIBS.keys()))
