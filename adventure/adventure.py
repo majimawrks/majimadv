@@ -689,6 +689,14 @@ class Adventure(
 
         await ctx.bot.on_command_error(ctx, error, unhandled_by_cog=not handled)
 
+    def _get_channel_buff(self, channel_id: int) -> dict | None:
+        buff = self._channel_buffs.get(channel_id)
+        if buff and buff["expires"] > time.time():
+            return buff
+        if channel_id in self._channel_buffs:
+            del self._channel_buffs[channel_id]
+        return None
+
     async def get_challenge(self, monsters: Dict[str, Monster], rng: Random):
         possible_monsters = []
         stat_range = rng.internal_seed.stat_range

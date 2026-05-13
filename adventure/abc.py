@@ -58,6 +58,7 @@ class AdventureMixin(ABC):
         self._react_messaged = []
         self._daily_bonus: dict = {}
         self.tasks = {}
+        self._channel_buffs: dict = {}
         self.locks: MutableMapping[int, asyncio.Lock] = {}
         self.gb_task = None
 
