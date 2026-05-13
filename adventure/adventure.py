@@ -815,6 +815,15 @@ class Adventure(
                 )
             )
 
+        if self._get_channel_buff(ctx.channel.id):
+            return await msg.edit(
+                embed=discord.Embed(
+                    title=_("A blessing was just applied to this channel."),
+                    description=_("Your tribute was not charged."),
+                    colour=discord.Colour.red(),
+                )
+            )
+
         try:
             await bank.withdraw_credits(ctx.author, view.chosen_cost)
         except ValueError:
