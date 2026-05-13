@@ -1021,7 +1021,6 @@ class BackPackCommands(AdventureMixin):
         """
         if not await self.allow_in_dm(ctx):
             return await smart_embed(ctx, _("This command is not available in DM's on this bot."))
-        await ctx.defer()
         try:
             c = await Character.from_json(ctx, self.config, ctx.author, self._daily_bonus)
         except Exception as exc:
@@ -1050,12 +1049,46 @@ class BackPackCommands(AdventureMixin):
                 ),
             )
 
+        god = await self.config.god_name()
+        if ctx.guild:
+            guild_god = await self.config.guild(ctx.guild).god_name()
+            if guild_god:
+                god = guild_god
+
+        confirm_embed = discord.Embed(
+            title=_("🙏 Seek {god}'s Divine Appraisal?").format(god=god),
+            description=_(
+                "You kneel and pray to **{god}**, asking for divine insight into the true worth of your belongings.\n\n"
+                "**Cost:** {cost} {currency} ({count} items × 100)\n\n"
+                "⚠️ The gods are fickle — your appraisal may fail based on your deeds. "
+                "Higher-rarity items are harder to divine."
+            ).format(
+                god=god,
+                cost=humanize_number(cost),
+                currency=currency_name,
+                count=len(appraisable),
+            ),
+            colour=await ctx.embed_colour(),
+        )
+        view = ConfirmView(60, ctx.author)
+        confirm_msg = await ctx.send(embed=confirm_embed, view=view)
+        await view.wait()
+        await confirm_msg.edit(view=None)
+        if not view.confirmed:
+            return await confirm_msg.edit(
+                embed=discord.Embed(
+                    title=_("Appraisal cancelled."),
+                    colour=await ctx.embed_colour(),
+                )
+            )
+
+        await ctx.defer()
         await bank.withdraw_credits(ctx.author, cost)
         rebirth_bonus = 1.0 + 0.01 * (c.rebirths // 20)
 
         results = []
         for item in sorted(appraisable, key=lambda i: (i.rarity.value, i.name)):
-            fail_chance = 0.5 + 0.05 * min(item.rarity.value, 5)
+            fail_chance = 0.25 + 0.05 * min(item.rarity.value, 5)
             if random.random() < fail_chance:
                 results.append((item, None))
             else:
