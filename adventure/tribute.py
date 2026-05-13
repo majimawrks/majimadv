@@ -47,9 +47,10 @@ TRIBUTE_BUFF_DESCRIPTIONS = {
 
 class _TributeBase(discord.ui.View):
     def __init__(self, ctx: commands.Context):
-        super().__init__(timeout=60)
+        super().__init__(timeout=30)
         self.ctx = ctx
         self.cancelled = False
+        self.timed_out = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user != self.ctx.author:
@@ -58,7 +59,7 @@ class _TributeBase(discord.ui.View):
         return True
 
     async def on_timeout(self):
-        pass
+        self.timed_out = True
 
     def _add_cancel(self):
         btn = discord.ui.Button(
@@ -187,6 +188,14 @@ class TributeCommands(AdventureMixin):
 
             colour = await ctx.embed_colour()
             cancelled_embed = discord.Embed(title=_("Tribute cancelled."), colour=colour)
+            timeout_embed = discord.Embed(
+                title=_("\N{ANGRY FACE} You dare waste a god's time?"),
+                description=_(
+                    "**{god}** graced {channel} with an audience, yet you stood there in silence.\n"
+                    "The divine presence withdraws — do not return until you are ready to kneel."
+                ).format(god=god, channel=ctx.channel.mention),
+                colour=discord.Colour.dark_red(),
+            )
 
             type_embed = discord.Embed(
                 title=_("\N{PERSON WITH FOLDED HANDS} Pay Tribute to {god}?").format(god=god),
@@ -208,6 +217,8 @@ class TributeCommands(AdventureMixin):
                     await msg.edit(embed=type_embed, view=type_view)
                 await type_view.wait()
 
+                if type_view.timed_out:
+                    return await msg.edit(embed=timeout_embed, view=None)
                 if type_view.cancelled or not type_view._chosen:
                     return await msg.edit(embed=cancelled_embed, view=None)
 
@@ -230,6 +241,8 @@ class TributeCommands(AdventureMixin):
                 await msg.edit(embed=duration_embed, view=duration_view)
                 await duration_view.wait()
 
+                if duration_view.timed_out:
+                    return await msg.edit(embed=timeout_embed, view=None)
                 if duration_view.cancelled or duration_view.chosen_duration is None:
                     return await msg.edit(embed=cancelled_embed, view=None)
 
