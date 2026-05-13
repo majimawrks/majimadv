@@ -159,6 +159,49 @@ def is_dev(user: Union[discord.User, discord.Member]):
     return user.id in DEV_LIST
 
 
+def _build_appraise_embeds(
+    title: str,
+    header_lines: list,
+    item_lines: list,
+    colour: discord.Colour,
+) -> list:
+    """Build paginated discord.Embed list for appraisal results."""
+    header = "\n".join(header_lines) + "\n\n" if header_lines else ""
+    if not item_lines:
+        embed = discord.Embed(
+            title=title,
+            description=header + "*(No items to display)*",
+            colour=colour,
+        )
+        embed.set_footer(text="Page 1/1")
+        return [embed]
+
+    pages = []
+    current_lines: list = []
+    current_len = len(header)
+
+    for line in item_lines:
+        line_len = len(line) + 1
+        if current_len + line_len > 3800 and current_lines:
+            pages.append(header + "\n".join(current_lines))
+            current_lines = [line]
+            current_len = len(header) + line_len
+        else:
+            current_lines.append(line)
+            current_len += line_len
+
+    if current_lines:
+        pages.append(header + "\n".join(current_lines))
+
+    total = len(pages)
+    embeds = []
+    for i, content in enumerate(pages):
+        embed = discord.Embed(title=title, description=content, colour=colour)
+        embed.set_footer(text=f"Page {i + 1}/{total}")
+        embeds.append(embed)
+    return embeds
+
+
 def has_separated_economy():
     async def predicate(ctx):
         if not (ctx.cog and getattr(ctx.cog, "_separate_economy", False)):

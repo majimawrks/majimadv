@@ -2,6 +2,7 @@
 import contextlib
 import logging
 import os
+import random
 from typing import Union
 
 import discord
@@ -15,10 +16,10 @@ from redbot.core.utils.chat_formatting import bold, box, humanize_list, humanize
 from .abc import AdventureMixin
 from .bank import bank
 from .charsheet import Character, Item
-from .constants import HeroClasses, Slot
+from .constants import HeroClasses, Rarities, Slot
 from .converters import DayConverter, PercentageConverter, parse_timedelta
-from .helpers import has_separated_economy, smart_embed
-from .menus import EquipSetMenu, PetSelectMenu
+from .helpers import _build_appraise_embeds, _sell, escape, has_separated_economy, smart_embed
+from .menus import BaseMenu, EquipSetMenu, PetSelectMenu, SimpleSource
 
 _ = Translator("Adventure", __file__)
 
@@ -499,6 +500,69 @@ class AdventureSetCommands(AdventureMixin):
             ctx,
             _("Equipped {items} on {user}.").format(items=equipped, user=bold(str(user))),
         )
+
+    @adventureset.command(name="valuate")
+    @owner_or_server_admin()
+    async def adventureset_valuate(
+        self, ctx: commands.Context, user: Union[discord.Member, discord.User]
+    ):
+        """[Admin] Appraise a user's backpack to estimate total value. No cost charged, no failure odds."""
+        await ctx.defer()
+        try:
+            c = await Character.from_json(ctx, self.config, user, self._daily_bonus)
+        except Exception as exc:
+            log.exception("Error with the new character sheet", exc_info=exc)
+            return
+
+        appraisable = [item for item in c.backpack.values() if item.rarity is not Rarities.forged]
+        if not appraisable:
+            return await smart_embed(
+                ctx, _("{user} has no appraisable items.").format(user=bold(str(user)))
+            )
+
+        currency_name = await bank.get_currency_name(ctx.guild)
+        rebirth_bonus = 1.0 + 0.01 * (c.rebirths // 20)
+
+        results = []
+        for item in sorted(appraisable, key=lambda i: (i.rarity.value, i.name)):
+            base_price = _sell(c, item)
+            results.append((item, round(base_price * rebirth_bonus)))
+
+        total_value = sum(p * item.owned for item, p in results)
+        bonus_pct = round((rebirth_bonus - 1.0) * 100)
+
+        header_lines = [
+            _("Admin appraisal — no cost charged, no failure odds."),
+            _("Rebirth bonus: **+{pct}%**").format(pct=bonus_pct),
+            _(
+                "Total estimate: **{total}** {currency} ({count} items)"
+            ).format(
+                total=humanize_number(total_value),
+                currency=currency_name,
+                count=len(results),
+            ),
+        ]
+
+        emojis = Rarities.emojis()
+        item_lines = []
+        for item, price in results:
+            emoji = emojis.get(item.rarity, "")
+            qty = f" ×{item.owned}" if item.owned > 1 else ""
+            item_lines.append(f"{emoji} **{item.name}**{qty}: {humanize_number(price)}/ea")
+
+        colour = await ctx.embed_colour()
+        embeds = _build_appraise_embeds(
+            title=_("🔍 Backpack Appraisal — {user}").format(user=escape(str(user))),
+            header_lines=header_lines,
+            item_lines=item_lines,
+            colour=colour,
+        )
+        await BaseMenu(
+            source=SimpleSource(embeds),
+            delete_message_after=True,
+            clear_reactions_after=True,
+            timeout=180,
+        ).start(ctx=ctx)
 
     @adventureset.command()
     @commands.is_owner()

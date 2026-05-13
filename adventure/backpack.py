@@ -25,7 +25,7 @@ from .converters import (
     RarityConverter,
     SlotConverter,
 )
-from .helpers import ConfirmView, _sell, escape, is_dev, smart_embed
+from .helpers import ConfirmView, _build_appraise_embeds, _sell, escape, is_dev, smart_embed
 from .menus import BackpackMenu, BackpackSource, BaseMenu, SimpleSource
 
 _ = Translator("Adventure", __file__)
@@ -1008,3 +1008,105 @@ class BackPackCommands(AdventureMixin):
                     clear_reactions_after=True,
                     timeout=180,
                 ).start(ctx=ctx)
+
+    @commands.command(name="appraise", aliases=["appr"])
+    @commands.bot_has_permissions(embed_links=True)
+    async def appraise_backpack(self, ctx: commands.Context):
+        """Appraise your backpack items to estimate their sell value.
+
+        Forged (soul-bound) items are excluded.
+        Costs 100 coins per item in your backpack (forged excluded).
+        Each item has a 50% base appraisal failure chance, +5% per rarity tier above Normal (capped at Set tier).
+        Successful appraisals receive a +1% bonus per 20 rebirth levels.
+        """
+        if not await self.allow_in_dm(ctx):
+            return await smart_embed(ctx, _("This command is not available in DM's on this bot."))
+        await ctx.defer()
+        try:
+            c = await Character.from_json(ctx, self.config, ctx.author, self._daily_bonus)
+        except Exception as exc:
+            log.exception("Error with the new character sheet", exc_info=exc)
+            return
+
+        appraisable = [item for item in c.backpack.values() if item.rarity is not Rarities.forged]
+        if not appraisable:
+            return await smart_embed(ctx, _("You have no appraisable items in your backpack."))
+
+        cost = len(appraisable) * 100
+        currency_name = await bank.get_currency_name(ctx.guild)
+
+        if not await bank.can_spend(ctx.author, cost):
+            balance = await bank.get_balance(ctx.author)
+            return await smart_embed(
+                ctx,
+                _(
+                    "You need {cost} {currency} to appraise your {count} item(s), "
+                    "but you only have {balance} {currency}."
+                ).format(
+                    cost=humanize_number(cost),
+                    currency=currency_name,
+                    count=len(appraisable),
+                    balance=humanize_number(balance),
+                ),
+            )
+
+        await bank.withdraw_credits(ctx.author, cost)
+        rebirth_bonus = 1.0 + 0.01 * (c.rebirths // 20)
+
+        results = []
+        for item in sorted(appraisable, key=lambda i: (i.rarity.value, i.name)):
+            fail_chance = 0.5 + 0.05 * min(item.rarity.value, 5)
+            if random.random() < fail_chance:
+                results.append((item, None))
+            else:
+                base_price = _sell(c, item)
+                results.append((item, round(base_price * rebirth_bonus)))
+
+        appraised_count = sum(1 for _, p in results if p is not None)
+        failed_count = sum(1 for _, p in results if p is None)
+        total_value = sum(p * item.owned for item, p in results if p is not None)
+        bonus_pct = round((rebirth_bonus - 1.0) * 100)
+
+        header_lines = [
+            _("Appraisal fee: **{cost}** {currency}").format(
+                cost=humanize_number(cost), currency=currency_name
+            ),
+            _("Rebirth bonus: **+{pct}%**").format(pct=bonus_pct),
+            _(
+                "Items appraised: **{ok}** | Failed: **{fail}** | "
+                "Total estimate: **{total}** {currency}"
+            ).format(
+                ok=appraised_count,
+                fail=failed_count,
+                total=humanize_number(total_value),
+                currency=currency_name,
+            ),
+        ]
+
+        emojis = Rarities.emojis()
+        item_lines = []
+        for item, price in results:
+            emoji = emojis.get(item.rarity, "")
+            qty = f" ×{item.owned}" if item.owned > 1 else ""
+            if price is not None:
+                item_lines.append(
+                    f"{emoji} **{item.name}**{qty}: {humanize_number(price)}/ea"
+                )
+            else:
+                item_lines.append(f"{emoji} **{item.name}**{qty}: *(appraisal failed)*")
+
+        colour = await ctx.embed_colour()
+        embeds = _build_appraise_embeds(
+            title=_("🔍 Backpack Appraisal — {user}").format(
+                user=escape(ctx.author.display_name)
+            ),
+            header_lines=header_lines,
+            item_lines=item_lines,
+            colour=colour,
+        )
+        await BaseMenu(
+            source=SimpleSource(embeds),
+            delete_message_after=True,
+            clear_reactions_after=True,
+            timeout=180,
+        ).start(ctx=ctx)

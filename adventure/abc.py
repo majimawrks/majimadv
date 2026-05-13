@@ -291,6 +291,10 @@ class AdventureMixin(ABC):
         raise NotImplementedError()
 
     @abstractmethod
+    async def adventureset_valuate(self, ctx: commands.Context, user: Union[discord.Member, discord.User]):
+        raise NotImplementedError()
+
+    @abstractmethod
     async def advcooldown(self, ctx: commands.Context, *, time_in_seconds: int):
         raise NotImplementedError()
 
@@ -433,6 +437,10 @@ class AdventureMixin(ABC):
 
     @abstractmethod
     async def commands_cbackpack_sell(self, ctx: commands.Context, *, query: BackpackFilterParser):
+        raise NotImplementedError()
+
+    @abstractmethod
+    async def appraise_backpack(self, ctx: commands.Context):
         raise NotImplementedError()
 
     #######################################################################
