@@ -149,7 +149,7 @@ class AdventureMixin(ABC):
 
     @abstractmethod
     async def update_monster_roster(
-        self, c: Optional[Character] = None, rng: Optional[Random] = None
+        self, c: Optional[Character] = None, rng: Optional[Random] = None, channel_buff: Optional[dict] = None,
     ) -> Tuple[Dict[str, Monster], float, bool]:
         raise NotImplementedError()
 
