@@ -60,6 +60,8 @@ default_guild = {
     "rebirth_cost": 100.0,
     "disallow_withdraw": True,
     "max_allowed_withdraw": 50000,
+    "tribute_cooldown": 7200,
+    "tribute_last_used": 0.0,
 }
 default_global = {
     "god_name": "Herbert",

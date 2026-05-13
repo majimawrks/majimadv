@@ -764,6 +764,25 @@ class Adventure(
             )
         buff_type = buff_type.lower() if buff_type else None
 
+        cooldown = await self.config.guild(ctx.guild).tribute_cooldown()
+        last_used = await self.config.guild(ctx.guild).tribute_last_used()
+        remaining = cooldown - (time.time() - last_used)
+        if remaining > 0:
+            hours, rem = divmod(int(remaining), 3600)
+            minutes, secs = divmod(rem, 60)
+            if hours:
+                remaining_str = _("{h}h {m}m").format(h=hours, m=minutes)
+            elif minutes:
+                remaining_str = _("{m}m {s}s").format(m=minutes, s=secs)
+            else:
+                remaining_str = _("{s}s").format(s=secs)
+            return await smart_embed(
+                ctx,
+                _("The gods are still recovering from the last tribute. Try again in **{time}**.").format(
+                    time=remaining_str
+                ),
+            )
+
         god = await self.config.god_name()
         guild_god = await self.config.guild(ctx.guild).god_name()
         if guild_god:
@@ -838,11 +857,13 @@ class Adventure(
             )
 
         duration_label = next(label for s, label in TributeView.DURATIONS if s == view.chosen_duration)
+        now = time.time()
         self._channel_buffs[ctx.channel.id] = {
-            "expires": time.time() + view.chosen_duration,
+            "expires": now + view.chosen_duration,
             "transcended": buff_type in ("transcended", "divine"),
             "immortal": buff_type in ("immortal", "divine"),
         }
+        await self.config.guild(ctx.guild).tribute_last_used.set(now)
 
         await msg.edit(
             embed=discord.Embed(
