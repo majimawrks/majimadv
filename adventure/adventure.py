@@ -902,15 +902,20 @@ class Adventure(
                 challenge = None
 
         rng = Random(seed)
+        channel_buff = self._get_channel_buff(ctx.channel.id)
         text = ""
-        monster_roster, monster_stats, transcended = await self.update_monster_roster(c=c, rng=rng)
+        monster_roster, monster_stats, transcended = await self.update_monster_roster(c=c, rng=rng, channel_buff=channel_buff)
         if challenge is None or challenge not in monster_roster:
-            challenge = await self.get_challenge(monster_roster, rng)
+            challenge = await self.get_challenge(monster_roster, rng, channel_buff=channel_buff)
 
         if attribute and attribute.lower() in self.ATTRIBS:
             attribute = attribute.lower()
         else:
-            attribute = rng.choice(list(self.ATTRIBS.keys()))
+            if channel_buff and channel_buff.get("immortal"):
+                attrib_pool = list(self.ATTRIBS.keys()) + ["immortal"] * 9
+                attribute = rng.choice(attrib_pool)
+            else:
+                attribute = rng.choice(list(self.ATTRIBS.keys()))
         new_challenge = challenge
         easy_mode = await self.config.easy_mode()
         monster = monster_roster[challenge].copy()
