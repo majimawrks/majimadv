@@ -697,7 +697,7 @@ class Adventure(
             del self._channel_buffs[channel_id]
         return None
 
-    async def get_challenge(self, monsters: Dict[str, Monster], rng: Random):
+    async def get_challenge(self, monsters: Dict[str, Monster], rng: Random, channel_buff: dict | None = None):
         possible_monsters = []
         stat_range = rng.internal_seed.stat_range
         log.debug("Random Seed is %s", int(rng.internal_seed))
@@ -708,8 +708,8 @@ class Adventure(
             if not appropriate_range:
                 continue
             if not stats["boss"] and not stats["miniboss"]:
-                break_at = rng.randint(1, 15)
-                # log.debug("Adding monster %s times", break_at)
+                upper = 2 if channel_buff else 15
+                break_at = rng.randint(1, upper)
                 possible_monsters.extend([m for i in range(1, break_at)])
             else:
                 possible_monsters.append(m)
